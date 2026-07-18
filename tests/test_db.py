@@ -486,6 +486,42 @@ class RecurringTransactionTestCase(unittest.TestCase):
     def test_advance_date_weekly_adds_seven_days(self):
         self.assertEqual(Database._advance_date("2026-01-01", "weekly"), "2026-01-08")
 
+    def test_advance_date_with_anchor_day_recovers_after_a_short_month(self):
+        # Regression trouvee a l'audit : sans anchor_day, une fois clampe
+        # sur un mois court (28), le jour restait bloque a 28 indefiniment,
+        # meme dans un mois qui compte 31 jours. Avec anchor_day=31, le
+        # rendez-vous revient bien au 31 des que le mois le permet.
+        after_february = Database._advance_date("2026-01-31", "monthly", anchor_day=31)
+        self.assertEqual(after_february, "2026-02-28")
+        after_march = Database._advance_date(after_february, "monthly", anchor_day=31)
+        self.assertEqual(after_march, "2026-03-31")
+
+    def test_advance_date_without_anchor_day_keeps_the_old_ratcheting_behavior(self):
+        # Compatibilite : appeler _advance_date sans anchor_day (comme le
+        # faisaient les tests/appels avant cette correction) reste inchange.
+        after_february = Database._advance_date("2026-01-31", "monthly")
+        after_march = Database._advance_date(after_february, "monthly")
+        self.assertEqual(after_march, "2026-03-28")
+
+    def test_generate_due_recurring_transactions_never_drifts_the_day_of_month(self):
+        # Bout en bout : un loyer du 31 doit rester au 31 chaque mois qui le
+        # permet, meme apres avoir traverse fevrier.
+        self.db.add_recurring_transaction(self.account_id, "2026-01-31", -800.0, "monthly")
+        self.db.generate_due_recurring_transactions(as_of="2026-04-01")
+        template = self.db.list_recurring_transactions()[0]
+        self.assertEqual(template["next_date"], "2026-04-30")  # avril n'a que 30 jours
+
+    def test_generate_due_recurring_transactions_defaults_to_local_today(self):
+        # Regression trouvee a l'audit : as_of par defaut utilisait la date
+        # UTC, incoherente avec le reste de l'application (budget.current_
+        # month(), dates de transaction) qui utilise toujours l'heure locale.
+        import datetime as _datetime_module
+        rec_id = self.db.add_recurring_transaction(self.account_id, "2000-01-01", -800.0, "monthly")
+        created_ids = self.db.generate_due_recurring_transactions()  # as_of implicite
+        self.assertGreater(len(created_ids), 0)
+        template = self.db.list_recurring_transactions()[0]
+        self.assertLessEqual(template["next_date"], (_datetime_module.date.today() + _datetime_module.timedelta(days=31)).isoformat())
+
     def test_delete_recurring_transaction_removes_it(self):
         rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
         self.db.delete_recurring_transaction(rec_id)

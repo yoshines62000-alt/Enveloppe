@@ -106,6 +106,7 @@ class Database:
             amount REAL NOT NULL,
             frequency TEXT NOT NULL,
             next_date TEXT NOT NULL,
+            anchor_day INTEGER,
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         );
@@ -116,6 +117,7 @@ class Database:
         # EXISTS, d'ou cette migration additive explicite (idempotente).
         self._add_column_if_missing("transactions", "transfer_id", "INTEGER REFERENCES transactions(id)")
         self._add_column_if_missing("categories", "savings_goal", "REAL")
+        self._add_column_if_missing("recurring_transactions", "anchor_day", "INTEGER")
 
     def _add_column_if_missing(self, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -373,11 +375,19 @@ class Database:
         _validate_date(date)
         if frequency not in self._RECURRING_FREQUENCIES:
             raise ValueError(f"Frequence invalide : {frequency!r}")
+        # anchor_day fige le jour du mois VOULU (ex: 31), independamment de
+        # ce que next_date devient au fil des avancements - voir
+        # _advance_date : sans lui, une premiere echeance tombant sur un
+        # mois court (ex: 31 janvier -> 28 fevrier) ferait glisser TOUTES
+        # les echeances suivantes sur le 28, y compris dans un mois qui
+        # compte pourtant 31 jours (bug trouve a l'audit).
+        from datetime import date as _date_cls
+        anchor_day = _date_cls.fromisoformat(date).day
         cur = self.conn.execute(
             """INSERT INTO recurring_transactions
-               (account_id, category_id, payee, memo, amount, frequency, next_date, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (account_id, category_id, payee.strip(), memo.strip(), amount, frequency, date, _now_iso()),
+               (account_id, category_id, payee, memo, amount, frequency, next_date, anchor_day, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (account_id, category_id, payee.strip(), memo.strip(), amount, frequency, date, anchor_day, _now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -395,7 +405,10 @@ class Database:
         return self.conn.execute(query).fetchall()
 
     def update_recurring_transaction(self, recurring_id: int, **fields) -> None:
-        allowed = {"account_id", "category_id", "payee", "memo", "amount", "frequency", "next_date", "active"}
+        allowed = {
+            "account_id", "category_id", "payee", "memo", "amount", "frequency",
+            "next_date", "anchor_day", "active",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
@@ -414,11 +427,20 @@ class Database:
         self.conn.commit()
 
     @staticmethod
-    def _advance_date(date_str: str, frequency: str) -> str:
+    def _advance_date(date_str: str, frequency: str, anchor_day: Optional[int] = None) -> str:
         """Calcule la prochaine echeance apres `date_str` pour une frequence
         donnee. Le mensuel/annuel ramene toujours le jour au dernier jour du
         mois cible s'il deborde (ex: 31 janvier + mensuel -> 28/29 fevrier,
-        jamais une ValueError ni un glissement silencieux vers mars)."""
+        jamais une ValueError ni un glissement silencieux vers mars).
+
+        `anchor_day` (le jour du mois VOULU, ex: 31) est le jour cible a
+        chaque avancement - PAS `current.day` (le jour du dernier
+        `date_str` calcule). Sans cette distinction, un premier
+        rapprochement force par un mois court (31 janvier -> 28 fevrier)
+        ferait deriver TOUTES les echeances suivantes sur le 28,
+        indefiniment, meme un mois qui compte 31 jours (bug trouve a
+        l'audit). Si `anchor_day` est omis (compatibilite/tests directs de
+        cette fonction), on retombe sur `current.day` comme avant."""
         import calendar
         from datetime import date as _date, timedelta as _timedelta
 
@@ -435,7 +457,7 @@ class Database:
         else:
             raise ValueError(f"Frequence invalide : {frequency!r}")
         last_day = calendar.monthrange(year, month)[1]
-        day = min(current.day, last_day)
+        day = min(anchor_day if anchor_day is not None else current.day, last_day)
         return _date(year, month, day).isoformat()
 
     def generate_due_recurring_transactions(self, as_of: Optional[str] = None) -> list:
@@ -446,7 +468,15 @@ class Database:
         mensuels manques generent bien 2 transactions, pas une seule).
         Renvoie la liste des ids de transactions creees."""
         if as_of is None:
-            as_of = datetime.now(timezone.utc).date().isoformat()
+            # date.today() (heure LOCALE), pas datetime.now(timezone.utc) :
+            # toutes les autres dates "du jour" de l'application (mois
+            # budgetaire courant via budget.current_month(), date par
+            # defaut d'une nouvelle transaction) utilisent deja l'heure
+            # locale de l'utilisateur - comparer ici a la date UTC aurait pu
+            # generer une echeance jusqu'a un jour trop tot ou trop tard
+            # selon le fuseau horaire (bug trouve a l'audit).
+            from datetime import date as _date_cls
+            as_of = _date_cls.today().isoformat()
         created_ids = []
         for template in self.list_recurring_transactions():
             next_date = template["next_date"]
@@ -456,7 +486,7 @@ class Database:
                     category_id=template["category_id"], payee=template["payee"], memo=template["memo"],
                 )
                 created_ids.append(new_id)
-                next_date = self._advance_date(next_date, template["frequency"])
+                next_date = self._advance_date(next_date, template["frequency"], template["anchor_day"])
             if next_date != template["next_date"]:
                 self.update_recurring_transaction(template["id"], next_date=next_date)
         return created_ids
