@@ -421,6 +421,21 @@ class EnveloppeApp:
         category_rows, category_labels = self._category_choices()
         existing_splits = self.db.get_transaction_splits(transaction_id)
 
+        # Une categorie archivee deja utilisee dans ce fractionnement doit
+        # rester selectionnable ici (sinon sa ligne apparaitrait vide au
+        # rechargement du dialogue, et Enregistrer la supprimerait
+        # silencieusement du fractionnement - bug trouve a l'audit), meme si
+        # elle n'apparait plus dans les listes de saisie pour une NOUVELLE
+        # part (self._category_choices() ne renvoie que les actives).
+        known_ids = {row["id"] for row in category_rows}
+        for split in existing_splits:
+            if split["category_id"] not in known_ids:
+                archived_category = self.db.get_category(split["category_id"])
+                if archived_category is not None:
+                    category_rows = category_rows + [archived_category]
+                    category_labels = category_labels + [f"{archived_category['id']} - {archived_category['name']} (archivee)"]
+                    known_ids.add(archived_category["id"])
+
         from tkinter import Toplevel
 
         dialog = Toplevel(self.root)
@@ -685,6 +700,19 @@ class EnveloppeApp:
         tx = self.db.get_transaction(transaction_id)
         if tx is None:
             return
+        if tx["transfer_id"] is not None:
+            # Ce dialogue generique ne sait pas repercuter un changement sur
+            # l'autre jambe (compte/montant/date lies) - le modifier ici
+            # desynchroniserait silencieusement le virement.
+            messagebox.showwarning(
+                APP_TITLE,
+                "Cette transaction fait partie d'un virement entre comptes.\n"
+                "Supprimez le virement (bouton 'Supprimer la transaction selectionnee') "
+                "puis recreez-le pour le modifier.",
+            )
+            return
+        existing_splits = self.db.get_transaction_splits(transaction_id)
+        is_split = bool(existing_splits)
 
         from tkinter import Toplevel
 
@@ -711,8 +739,18 @@ class EnveloppeApp:
         account_combo = ttk.Combobox(dialog, textvariable=account_var, values=account_labels, width=25, state="readonly")
         account_combo.grid(row=0, column=1, padx=10, pady=(10, 0))
         ttk.Label(dialog, text="Categorie").grid(row=1, column=0, sticky="w", padx=10)
-        category_combo = ttk.Combobox(dialog, textvariable=category_var, values=category_labels, width=25, state="readonly")
-        category_combo.grid(row=1, column=1, padx=10)
+        if is_split:
+            # La categorie est portee par les lignes de fractionnement, pas
+            # par la transaction elle-meme : ne jamais envoyer category_id a
+            # update_transaction ici (voir on_save), sous peine d'effacer
+            # silencieusement le fractionnement existant (bug d'audit).
+            ttk.Label(
+                dialog, text=f"Fractionnee sur {len(existing_splits)} categories - "
+                "utilisez 'Fractionner...' pour la modifier", foreground="#666", wraplength=220,
+            ).grid(row=1, column=1, sticky="w", padx=10)
+        else:
+            category_combo = ttk.Combobox(dialog, textvariable=category_var, values=category_labels, width=25, state="readonly")
+            category_combo.grid(row=1, column=1, padx=10)
         ttk.Label(dialog, text="Date (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", padx=10)
         ttk.Entry(dialog, textvariable=date_var, width=15).grid(row=2, column=1, sticky="w", padx=10)
         ttk.Label(dialog, text="Beneficiaire").grid(row=3, column=0, sticky="w", padx=10)
@@ -725,7 +763,6 @@ class EnveloppeApp:
             if account_id is None:
                 messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
                 return
-            category_id = self._parse_id(category_var.get())
             date_text = date_var.get().strip()
             try:
                 from datetime import date as _date
@@ -741,10 +778,12 @@ class EnveloppeApp:
             if amount == 0:
                 messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
                 return
-            self.db.update_transaction(
-                transaction_id, account_id=account_id, category_id=category_id,
-                date=date_text, payee=payee_var.get().strip(), amount=amount,
+            update_kwargs = dict(
+                account_id=account_id, date=date_text, payee=payee_var.get().strip(), amount=amount,
             )
+            if not is_split:
+                update_kwargs["category_id"] = self._parse_id(category_var.get())
+            self.db.update_transaction(transaction_id, **update_kwargs)
             dialog.destroy()
             self._refresh_transactions()
             self._refresh_accounts()

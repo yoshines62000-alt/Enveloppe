@@ -233,12 +233,22 @@ class Database:
             return
         if "date" in updates:
             _validate_date(updates["date"])
-        if "category_id" in updates:
+        should_clear_splits = "category_id" in updates
+        if not should_clear_splits and "amount" in updates:
+            # Un appelant peut renvoyer "amount" sans que sa valeur ait
+            # reellement change (ex: le dialogue d'edition standard renvoie
+            # toujours tous les champs, meme non modifies) - ne pas effacer
+            # un fractionnement existant dans ce cas. Seul un changement
+            # reel du montant invaliderait la somme des parts existantes
+            # (qui doit toujours correspondre exactement au montant total,
+            # voir set_transaction_splits).
+            current = self.get_transaction(transaction_id)
+            if current is not None and round(current["amount"], 2) != round(float(updates["amount"]), 2):
+                should_clear_splits = True
+        if should_clear_splits:
             # Assigner une categorie unique et etre fractionnee sur
-            # plusieurs categories sont mutuellement exclusifs : on ne
-            # laisse jamais les deux coexister silencieusement (l'ancien
-            # fractionnement deviendrait invisible mais continuerait a
-            # compter dans les enveloppes).
+            # plusieurs categories sont mutuellement exclusifs (category_id)
+            # - on ne laisse jamais les deux coexister silencieusement.
             self.clear_transaction_splits(transaction_id)
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         self.conn.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", (*updates.values(), transaction_id))

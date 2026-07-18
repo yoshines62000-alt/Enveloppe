@@ -343,6 +343,43 @@ class TransactionSplitTestCase(unittest.TestCase):
         self.assertEqual(self.db.get_transaction_splits(self.transaction_id), [])
         self.assertEqual(self.db.get_transaction(self.transaction_id)["category_id"], self.household_id)
 
+    def test_changing_the_amount_via_update_transaction_clears_an_existing_split(self):
+        # Trouve a l'audit : changer uniquement le montant total (sans
+        # toucher a category_id) laissait les parts existantes inchangees,
+        # desynchronisees de la somme reelle de la transaction - leur somme
+        # ne correspondrait alors plus a l'invariant verifie par
+        # set_transaction_splits.
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.update_transaction(self.transaction_id, amount=-150.0)
+        self.assertEqual(self.db.get_transaction_splits(self.transaction_id), [])
+        self.assertEqual(self.db.get_transaction(self.transaction_id)["amount"], -150.0)
+
+    def test_changing_only_the_payee_on_a_split_transaction_preserves_the_split(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.update_transaction(self.transaction_id, payee="Grand magasin (corrige)")
+        splits = self.db.get_transaction_splits(self.transaction_id)
+        self.assertEqual(len(splits), 2)
+        self.assertEqual(self.db.get_transaction(self.transaction_id)["payee"], "Grand magasin (corrige)")
+
+    def test_resubmitting_the_same_amount_on_a_split_transaction_preserves_the_split(self):
+        # Un appelant (le dialogue d'edition standard) peut renvoyer "amount"
+        # dans chaque sauvegarde meme si l'utilisateur n'a pas touche ce
+        # champ - seul un changement REEL de valeur doit effacer le split.
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        unchanged_amount = self.db.get_transaction(self.transaction_id)["amount"]
+        self.db.update_transaction(self.transaction_id, amount=unchanged_amount, payee="Corrige")
+        splits = self.db.get_transaction_splits(self.transaction_id)
+        self.assertEqual(len(splits), 2)
+
     def test_list_transactions_reports_a_split_count_for_split_transactions(self):
         self.db.set_transaction_splits(self.transaction_id, [
             {"category_id": self.groceries_id, "amount": -60.0},
