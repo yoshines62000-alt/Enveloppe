@@ -142,5 +142,114 @@ class DatabaseTestCase(unittest.TestCase):
         self.assertIsNone(self.db.get_transaction(transaction_id))
 
 
+class TransferTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.checking_id = self.db.add_account("Courant", starting_balance=1000.0)
+        self.savings_id = self.db.add_account("Epargne", starting_balance=200.0)
+
+    def test_add_transfer_creates_two_linked_transactions_with_opposite_amounts(self):
+        out_id, in_id = self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 100.0)
+        out_tx = self.db.get_transaction(out_id)
+        in_tx = self.db.get_transaction(in_id)
+        self.assertEqual(out_tx["amount"], -100.0)
+        self.assertEqual(in_tx["amount"], 100.0)
+        self.assertEqual(out_tx["transfer_id"], in_id)
+        self.assertEqual(in_tx["transfer_id"], out_id)
+
+    def test_transfer_legs_are_never_attached_to_a_category(self):
+        out_id, in_id = self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 100.0)
+        self.assertIsNone(self.db.get_transaction(out_id)["category_id"])
+        self.assertIsNone(self.db.get_transaction(in_id)["category_id"])
+
+    def test_transfer_moves_money_between_accounts_without_changing_the_total_balance(self):
+        total_before = self.db.total_on_budget_balance()
+        self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 100.0)
+        self.assertEqual(self.db.account_balance(self.checking_id), 900.0)
+        self.assertEqual(self.db.account_balance(self.savings_id), 300.0)
+        self.assertEqual(self.db.total_on_budget_balance(), total_before)
+
+    def test_add_transfer_rejects_the_same_account_on_both_sides(self):
+        with self.assertRaises(ValueError):
+            self.db.add_transfer(self.checking_id, self.checking_id, "2026-01-05", 50.0)
+
+    def test_add_transfer_rejects_a_zero_amount(self):
+        with self.assertRaises(ValueError):
+            self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 0.0)
+
+    def test_add_transfer_accepts_a_negative_amount_as_an_absolute_value(self):
+        out_id, in_id = self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", -100.0)
+        self.assertEqual(self.db.get_transaction(out_id)["amount"], -100.0)
+        self.assertEqual(self.db.get_transaction(in_id)["amount"], 100.0)
+
+    def test_delete_transfer_pair_removes_both_legs(self):
+        out_id, in_id = self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 100.0)
+        self.db.delete_transfer_pair(out_id)
+        self.assertIsNone(self.db.get_transaction(out_id))
+        self.assertIsNone(self.db.get_transaction(in_id))
+
+    def test_deleting_a_single_leg_unlinks_the_remaining_leg_instead_of_leaving_a_dangling_reference(self):
+        out_id, in_id = self.db.add_transfer(self.checking_id, self.savings_id, "2026-01-05", 100.0)
+        self.db.delete_transaction(out_id)
+        remaining = self.db.get_transaction(in_id)
+        self.assertIsNotNone(remaining)
+        self.assertIsNone(remaining["transfer_id"])
+
+    def test_delete_transfer_pair_on_an_ordinary_transaction_behaves_like_delete_transaction(self):
+        transaction_id = self.db.add_transaction(self.checking_id, "2026-01-05", -20.0)
+        self.db.delete_transfer_pair(transaction_id)
+        self.assertIsNone(self.db.get_transaction(transaction_id))
+
+    def test_reopening_a_pre_transfer_database_file_adds_the_missing_column(self):
+        # Simule une base de donnees creee avant l'ajout de transfer_id : la
+        # colonne ne doit pas empecher la reouverture, ni faire planter les
+        # anciennes transactions deja stockees.
+        self.db.close()
+        import sqlite3
+
+        old_style_path = self.tmp / "old.sqlite"
+        conn = sqlite3.connect(str(old_style_path))
+        conn.executescript("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT '',
+                starting_balance REAL NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
+            CREATE TABLE budget_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER NOT NULL, month TEXT NOT NULL,
+                assigned REAL NOT NULL DEFAULT 0, UNIQUE(category_id, month)
+            );
+            CREATE TABLE transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, category_id INTEGER,
+                date TEXT NOT NULL, payee TEXT NOT NULL DEFAULT '', memo TEXT NOT NULL DEFAULT '',
+                amount REAL NOT NULL, cleared INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO accounts (name, starting_balance, created_at) VALUES ('Ancien compte', 500.0, '2026-01-01')"
+        )
+        conn.execute(
+            "INSERT INTO transactions (account_id, date, payee, amount, created_at) "
+            "VALUES (1, '2026-01-05', 'Ancienne depense', -20.0, '2026-01-05')"
+        )
+        conn.commit()
+        conn.close()
+
+        reopened = Database(old_style_path)
+        self.addCleanup(reopened.close)
+        transactions = reopened.list_transactions()
+        self.assertEqual(len(transactions), 1)
+        self.assertIsNone(transactions[0]["transfer_id"])
+        # La base migree doit rester utilisable normalement, y compris pour
+        # de nouveaux virements.
+        savings_id = reopened.add_account("Nouvelle epargne")
+        reopened.add_transfer(1, savings_id, "2026-01-10", 50.0)
+
+
 if __name__ == "__main__":
     unittest.main()

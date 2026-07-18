@@ -402,6 +402,7 @@ class EnveloppeApp:
         ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=RIGHT)
         ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Exporter en CSV...", command=self._export_transactions_csv).pack(side=RIGHT, padx=(0, 5))
+        ttk.Button(actions, text="Virement entre comptes...", command=self._open_transfer_dialog).pack(side=RIGHT, padx=(0, 5))
 
     def _export_transactions_csv(self):
         from tkinter import filedialog
@@ -502,9 +503,10 @@ class EnveloppeApp:
         if filter_value and filter_value != "Tous":
             account_id = self._parse_id(filter_value)
         for tx in self.db.list_transactions(account_id=account_id):
+            category_label = "Virement" if tx["transfer_id"] is not None else (tx["category_name"] or "-")
             self.transactions_tree.insert("", END, iid=str(tx["id"]), values=(
                 tx["id"], tx["date"], tx["account_name"], tx["payee"],
-                tx["category_name"] or "-", bg.format_amount(tx["amount"]),
+                category_label, bg.format_amount(tx["amount"]),
             ))
 
     def _delete_transaction(self):
@@ -512,12 +514,79 @@ class EnveloppeApp:
         if not selection:
             messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
             return
-        if not messagebox.askyesno(APP_TITLE, "Supprimer cette transaction ?"):
-            return
-        self.db.delete_transaction(int(selection[0]))
+        transaction_id = int(selection[0])
+        tx = self.db.get_transaction(transaction_id)
+        if tx is not None and tx["transfer_id"] is not None:
+            if not messagebox.askyesno(
+                APP_TITLE,
+                "Cette transaction fait partie d'un virement entre deux comptes.\n"
+                "Supprimer les deux jambes liees du virement ?",
+            ):
+                return
+            self.db.delete_transfer_pair(transaction_id)
+        else:
+            if not messagebox.askyesno(APP_TITLE, "Supprimer cette transaction ?"):
+                return
+            self.db.delete_transaction(transaction_id)
         self._refresh_transactions()
         self._refresh_accounts()
         self._refresh_budget()
+
+    def _open_transfer_dialog(self):
+        accounts = self.db.list_accounts()
+        if len(accounts) < 2:
+            messagebox.showwarning(APP_TITLE, "Il faut au moins deux comptes pour effectuer un virement.")
+            return
+        account_labels = [f"{a['id']} - {a['name']}" for a in accounts]
+
+        from tkinter import Toplevel
+
+        dialog = Toplevel(self.root)
+        dialog.title("Virement entre comptes")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        from_var = StringVar(value=account_labels[0])
+        to_var = StringVar(value=account_labels[1])
+        date_var = StringVar(value=__import__("datetime").date.today().isoformat())
+        amount_var = StringVar()
+        memo_var = StringVar()
+
+        ttk.Label(dialog, text="Compte source").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 0))
+        ttk.Combobox(dialog, textvariable=from_var, values=account_labels, width=25, state="readonly").grid(row=0, column=1, padx=10, pady=(10, 0))
+        ttk.Label(dialog, text="Compte destination").grid(row=1, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Combobox(dialog, textvariable=to_var, values=account_labels, width=25, state="readonly").grid(row=1, column=1, padx=10, pady=(5, 0))
+        ttk.Label(dialog, text="Date (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Entry(dialog, textvariable=date_var, width=15).grid(row=2, column=1, sticky="w", padx=10, pady=(5, 0))
+        ttk.Label(dialog, text="Montant").grid(row=3, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
+        ttk.Label(dialog, text="Memo (optionnel)").grid(row=4, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Entry(dialog, textvariable=memo_var, width=25).grid(row=4, column=1, padx=10, pady=(5, 0))
+
+        def on_save():
+            from_id = self._parse_id(from_var.get())
+            to_id = self._parse_id(to_var.get())
+            try:
+                amount = float(amount_var.get())
+            except ValueError:
+                messagebox.showwarning(APP_TITLE, "Le montant doit etre un nombre.", parent=dialog)
+                return
+            date_text = date_var.get().strip()
+            try:
+                self.db.add_transfer(from_id, to_id, date_text, amount, memo=memo_var.get().strip())
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._refresh_transactions()
+            self._refresh_accounts()
+            self._refresh_budget()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, pady=10)
+        ttk.Button(buttons, text="Effectuer le virement", command=on_save).pack(side=LEFT, padx=5)
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
 
     def _edit_transaction(self, event=None):
         selection = self.transactions_tree.selection()

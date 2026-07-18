@@ -89,6 +89,16 @@ class Database:
         );
         """)
         self.conn.commit()
+        # transfer_id a ete ajoutee apres la sortie initiale : les bases
+        # SQLite existantes ne sont pas recreees par CREATE TABLE IF NOT
+        # EXISTS, d'ou cette migration additive explicite (idempotente).
+        self._add_column_if_missing("transactions", "transfer_id", "INTEGER REFERENCES transactions(id)")
+
+    def _add_column_if_missing(self, table: str, column: str, definition: str) -> None:
+        existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            self.conn.commit()
 
     # -- comptes --------------------------------------------------------------
 
@@ -220,11 +230,55 @@ class Database:
         self.conn.commit()
 
     def delete_transaction(self, transaction_id: int) -> None:
+        tx = self.get_transaction(transaction_id)
+        if tx is not None and tx["transfer_id"] is not None:
+            # Ne supprime que cette jambe : on delie l'autre jambe plutot
+            # que de la laisser pointer vers une ligne desormais inexistante
+            # (voir delete_transfer_pair pour supprimer les deux ensemble).
+            self.conn.execute("UPDATE transactions SET transfer_id = NULL WHERE id = ?", (tx["transfer_id"],))
         self.conn.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
         self.conn.commit()
 
     def get_transaction(self, transaction_id: int) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+
+    def add_transfer(self, from_account_id: int, to_account_id: int, date: str, amount: float, memo: str = "") -> tuple:
+        """Cree un virement entre deux comptes sous la forme de deux
+        transactions liees (transfer_id reciproque) : une sortie (montant
+        negatif) sur le compte source, une entree (montant positif) sur le
+        compte destination. Aucune des deux n'est rattachee a une
+        categorie - un virement entre ses propres comptes ne doit jamais
+        affecter le budget a enveloppes, seulement les soldes des comptes.
+        Renvoie (id_transaction_sortie, id_transaction_entree)."""
+        if from_account_id == to_account_id:
+            raise ValueError("Le compte source et le compte destination doivent etre differents.")
+        amount = abs(amount)
+        if amount == 0:
+            raise ValueError("Le montant du virement ne peut pas etre nul.")
+        from_account = self.get_account(from_account_id)
+        to_account = self.get_account(to_account_id)
+        out_id = self.add_transaction(
+            from_account_id, date, -amount, payee=f"Virement vers {to_account['name']}", memo=memo,
+        )
+        in_id = self.add_transaction(
+            to_account_id, date, amount, payee=f"Virement depuis {from_account['name']}", memo=memo,
+        )
+        self.conn.execute("UPDATE transactions SET transfer_id = ? WHERE id = ?", (in_id, out_id))
+        self.conn.execute("UPDATE transactions SET transfer_id = ? WHERE id = ?", (out_id, in_id))
+        self.conn.commit()
+        return out_id, in_id
+
+    def delete_transfer_pair(self, transaction_id: int) -> None:
+        """Supprime une transaction et, si elle fait partie d'un virement,
+        sa jambe liee egalement. Si ce n'est pas un virement, se comporte
+        comme delete_transaction."""
+        tx = self.get_transaction(transaction_id)
+        if tx is None:
+            return
+        partner_id = tx["transfer_id"]
+        self.delete_transaction(transaction_id)
+        if partner_id is not None:
+            self.delete_transaction(partner_id)
 
     def list_transactions(
         self, account_id: Optional[int] = None, category_id: Optional[int] = None,
