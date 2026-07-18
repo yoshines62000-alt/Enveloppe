@@ -150,5 +150,18 @@ def annual_budget_overview(db, year: int) -> dict:
     return {"year": year, "months": months, "rows": rows}
 
 
+def savings_goal_progress(available: float, goal: Optional[float]) -> Optional[dict]:
+    """Progres vers l'objectif d'epargne d'une categorie, ou None si aucun
+    objectif n'est defini. Un solde negatif (categorie en depassement) donne
+    un pourcentage de 0, jamais negatif - un depassement n'est pas un
+    "progres negatif" vers l'objectif, juste une absence de progres. Le
+    pourcentage est plafonne a 100 : depasser l'objectif reste "atteint",
+    pas "150% atteint"."""
+    if not goal or goal <= 0:
+        return None
+    percent = max(0.0, min(100.0, round(available / goal * 100)))
+    return {"available": available, "goal": goal, "percent": percent, "reached": available >= goal}
+
+
 def format_amount(amount: float, currency: str = "EUR") -> str:
     return f"{amount:,.2f} {currency}".replace(",", " ")

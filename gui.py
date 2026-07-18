@@ -197,34 +197,54 @@ class EnveloppeApp:
 
         self.category_name_var = StringVar()
         self.category_group_var = StringVar()
+        self.category_goal_var = StringVar()
 
         ttk.Label(form, text="Nom de la categorie").grid(row=0, column=0, sticky="w")
         ttk.Entry(form, textvariable=self.category_name_var, width=25).grid(row=0, column=1, padx=5)
         ttk.Label(form, text="Groupe (optionnel)").grid(row=0, column=2, sticky="w")
         ttk.Entry(form, textvariable=self.category_group_var, width=20).grid(row=0, column=3, padx=5)
-        ttk.Button(form, text="Ajouter la categorie", command=self._add_category).grid(row=0, column=4, padx=5)
+        ttk.Label(form, text="Objectif d'epargne (optionnel)").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(form, textvariable=self.category_goal_var, width=12).grid(row=1, column=1, sticky="w", pady=(5, 0))
+        ttk.Button(form, text="Ajouter la categorie", command=self._add_category).grid(row=1, column=4, pady=(5, 0))
 
-        columns = ("id", "group", "name", "archived")
+        columns = ("id", "group", "name", "goal", "archived")
         self.categories_tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
         for col, label, width in [
-            ("id", "ID", 40), ("group", "Groupe", 160), ("name", "Categorie", 200), ("archived", "Archive", 70),
+            ("id", "ID", 40), ("group", "Groupe", 160), ("name", "Categorie", 200),
+            ("goal", "Objectif d'epargne", 130), ("archived", "Archive", 70),
         ]:
             self.categories_tree.heading(col, text=label)
             self.categories_tree.column(col, width=width, anchor="w")
         self.categories_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+        self.categories_tree.bind("<Double-1>", self._edit_category_goal)
 
         actions = ttk.Frame(frame)
         actions.pack(fill=X, padx=10, pady=(0, 10))
         ttk.Button(actions, text="Archiver / desarchiver", command=self._toggle_category_archived).pack(side=LEFT)
+        ttk.Label(
+            actions, text="Double-cliquez sur une ligne pour modifier son objectif d'epargne.", foreground="#666",
+        ).pack(side=LEFT, padx=10)
 
     def _add_category(self):
         name = self.category_name_var.get().strip()
         if not name:
             messagebox.showwarning(APP_TITLE, "Le nom de la categorie est obligatoire.")
             return
-        self.db.add_category(name, self.category_group_var.get().strip())
+        goal_text = self.category_goal_var.get().strip()
+        goal = None
+        if goal_text:
+            try:
+                goal = self._parse_float(goal_text, "L'objectif d'epargne")
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc))
+                return
+            if goal <= 0:
+                messagebox.showwarning(APP_TITLE, "L'objectif d'epargne doit etre superieur a zero.")
+                return
+        self.db.add_category(name, self.category_group_var.get().strip(), savings_goal=goal)
         self.category_name_var.set("")
         self.category_group_var.set("")
+        self.category_goal_var.set("")
         self._refresh_categories()
         self._refresh_budget()
         self._refresh_transactions()
@@ -232,8 +252,10 @@ class EnveloppeApp:
     def _refresh_categories(self):
         self.categories_tree.delete(*self.categories_tree.get_children())
         for category in self.db.list_categories(include_archived=True):
+            goal = category["savings_goal"]
             self.categories_tree.insert("", END, iid=str(category["id"]), values=(
                 category["id"], category["group_name"] or "-", category["name"],
+                bg.format_amount(goal) if goal else "-",
                 "Oui" if category["archived"] else "Non",
             ))
         self._refresh_transaction_category_choices()
@@ -249,6 +271,24 @@ class EnveloppeApp:
         self._refresh_categories()
         self._refresh_budget()
         self._refresh_transactions()
+
+    def _edit_category_goal(self, event=None):
+        selection = self.categories_tree.selection()
+        if not selection:
+            return
+        category_id = int(selection[0])
+        category = self.db.get_category(category_id)
+
+        from tkinter import simpledialog
+        new_value = simpledialog.askfloat(
+            APP_TITLE, "Objectif d'epargne (laisser vide ou 0 pour aucun objectif) :",
+            initialvalue=category["savings_goal"] or 0.0, parent=self.root,
+        )
+        if new_value is None:
+            return
+        self.db.update_category(category_id, savings_goal=new_value if new_value > 0 else None)
+        self._refresh_categories()
+        self._refresh_budget()
 
     # -- onglet Budget ------------------------------------------------------------
 
@@ -267,11 +307,12 @@ class EnveloppeApp:
         ready_label = ttk.Label(top, textvariable=self.ready_to_assign_var, font=("Segoe UI", 12, "bold"))
         ready_label.pack(side=RIGHT, padx=10)
 
-        columns = ("group", "category", "budgeted", "activity", "available")
+        columns = ("group", "category", "budgeted", "activity", "available", "goal_progress")
         self.budget_tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
         for col, label, width in [
             ("group", "Groupe", 140), ("category", "Categorie", 180), ("budgeted", "Budgete", 110),
             ("activity", "Activite (ce mois)", 130), ("available", "Disponible", 110),
+            ("goal_progress", "Objectif d'epargne", 150),
         ]:
             self.budget_tree.heading(col, text=label)
             self.budget_tree.column(col, width=width, anchor="w")
@@ -316,9 +357,17 @@ class EnveloppeApp:
                 tags.append("overspent")
             if is_archived:
                 tags.append("archived")
+            progress = bg.savings_goal_progress(available, category["savings_goal"])
+            if progress is None:
+                progress_text = "-"
+            elif progress["reached"]:
+                progress_text = f"Atteint ({bg.format_amount(progress['goal'])})"
+            else:
+                progress_text = f"{progress['percent']:.0f}% de {bg.format_amount(progress['goal'])}"
             self.budget_tree.insert("", END, iid=str(category["id"]), values=(
                 category["group_name"] or "-", name,
                 bg.format_amount(budgeted), bg.format_amount(activity), bg.format_amount(available),
+                progress_text,
             ), tags=tuple(tags))
         ready = bg.ready_to_assign(self.db, self.current_month)
         self.ready_to_assign_var.set(f"Reste a assigner : {bg.format_amount(ready)}")

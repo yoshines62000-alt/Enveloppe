@@ -65,6 +65,7 @@ class Database:
             name TEXT NOT NULL,
             group_name TEXT NOT NULL DEFAULT '',
             archived INTEGER NOT NULL DEFAULT 0,
+            savings_goal REAL,
             created_at TEXT NOT NULL
         );
 
@@ -114,6 +115,7 @@ class Database:
         # SQLite existantes ne sont pas recreees par CREATE TABLE IF NOT
         # EXISTS, d'ou cette migration additive explicite (idempotente).
         self._add_column_if_missing("transactions", "transfer_id", "INTEGER REFERENCES transactions(id)")
+        self._add_column_if_missing("categories", "savings_goal", "REAL")
 
     def _add_column_if_missing(self, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -169,16 +171,16 @@ class Database:
 
     # -- categories -------------------------------------------------------------
 
-    def add_category(self, name: str, group_name: str = "") -> int:
+    def add_category(self, name: str, group_name: str = "", savings_goal: Optional[float] = None) -> int:
         cur = self.conn.execute(
-            "INSERT INTO categories (name, group_name, created_at) VALUES (?, ?, ?)",
-            (name.strip(), group_name.strip(), _now_iso()),
+            "INSERT INTO categories (name, group_name, savings_goal, created_at) VALUES (?, ?, ?, ?)",
+            (name.strip(), group_name.strip(), savings_goal, _now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid
 
     def update_category(self, category_id: int, **fields) -> None:
-        allowed = {"name", "group_name", "archived"}
+        allowed = {"name", "group_name", "archived", "savings_goal"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

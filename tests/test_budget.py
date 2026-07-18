@@ -157,6 +157,34 @@ class FormatAmountTestCase(unittest.TestCase):
         self.assertEqual(bg.format_amount(-42.0), "-42.00 EUR")
 
 
+class SavingsGoalProgressTestCase(unittest.TestCase):
+    def test_returns_none_when_no_goal_is_set(self):
+        self.assertIsNone(bg.savings_goal_progress(500.0, None))
+
+    def test_returns_none_when_goal_is_zero_or_negative(self):
+        self.assertIsNone(bg.savings_goal_progress(500.0, 0.0))
+        self.assertIsNone(bg.savings_goal_progress(500.0, -100.0))
+
+    def test_computes_percent_progress_toward_goal(self):
+        progress = bg.savings_goal_progress(600.0, 1000.0)
+        self.assertEqual(progress["percent"], 60)
+        self.assertFalse(progress["reached"])
+
+    def test_negative_available_clamps_to_zero_percent_not_negative(self):
+        progress = bg.savings_goal_progress(-200.0, 1000.0)
+        self.assertEqual(progress["percent"], 0)
+        self.assertFalse(progress["reached"])
+
+    def test_reaching_the_goal_is_flagged_and_capped_at_100_percent(self):
+        progress = bg.savings_goal_progress(1500.0, 1000.0)
+        self.assertEqual(progress["percent"], 100)
+        self.assertTrue(progress["reached"])
+
+    def test_exactly_at_goal_is_reached(self):
+        progress = bg.savings_goal_progress(1000.0, 1000.0)
+        self.assertTrue(progress["reached"])
+
+
 class SpendingReportTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

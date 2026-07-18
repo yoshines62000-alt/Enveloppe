@@ -49,6 +49,23 @@ class DatabaseTestCase(unittest.TestCase):
         names = [c["name"] for c in self.db.list_categories()]
         self.assertEqual(names, ["Cinema", "Epicerie", "Loyer"])  # Loisirs < Obligations alphabetiquement
 
+    def test_add_category_with_savings_goal(self):
+        category_id = self.db.add_category("Vacances", savings_goal=2000.0)
+        category = self.db.get_category(category_id)
+        self.assertEqual(category["savings_goal"], 2000.0)
+
+    def test_add_category_without_savings_goal_defaults_to_none(self):
+        category_id = self.db.add_category("Epicerie")
+        category = self.db.get_category(category_id)
+        self.assertIsNone(category["savings_goal"])
+
+    def test_update_category_sets_and_clears_savings_goal(self):
+        category_id = self.db.add_category("Vacances")
+        self.db.update_category(category_id, savings_goal=1500.0)
+        self.assertEqual(self.db.get_category(category_id)["savings_goal"], 1500.0)
+        self.db.update_category(category_id, savings_goal=None)
+        self.assertIsNone(self.db.get_category(category_id)["savings_goal"])
+
     def test_set_and_get_budget_entry_upserts(self):
         category_id = self.db.add_category("Epicerie")
         self.db.set_budget_entry(category_id, "2026-01", 300.0)
