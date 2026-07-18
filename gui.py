@@ -242,6 +242,7 @@ class EnveloppeApp:
         self.budget_month_var = StringVar()
         ttk.Label(top, textvariable=self.budget_month_var, font=("Segoe UI", 12, "bold")).pack(side=LEFT, padx=15)
         ttk.Button(top, text="Mois suivant >", command=lambda: self._change_month(1)).pack(side=LEFT)
+        ttk.Button(top, text="Copier le budget du mois precedent", command=self._copy_previous_month_budget).pack(side=LEFT, padx=15)
 
         self.ready_to_assign_var = StringVar()
         ready_label = ttk.Label(top, textvariable=self.ready_to_assign_var, font=("Segoe UI", 12, "bold"))
@@ -255,6 +256,8 @@ class EnveloppeApp:
         ]:
             self.budget_tree.heading(col, text=label)
             self.budget_tree.column(col, width=width, anchor="w")
+        self.budget_tree.tag_configure("overspent", foreground="#B00020")
+        self.budget_tree.tag_configure("archived", foreground="#888888")
         self.budget_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
         self.budget_tree.bind("<Double-1>", self._edit_budget_entry)
 
@@ -270,16 +273,53 @@ class EnveloppeApp:
     def _refresh_budget(self):
         self.budget_month_var.set(bg.month_label(self.current_month))
         self.budget_tree.delete(*self.budget_tree.get_children())
-        for category in self.db.list_categories():
+        # Les categories archivees ne sont pas proposees pour de nouvelles
+        # saisies, mais si un solde y est encore "range" (report d'un mois
+        # ou elle etait encore active), il doit rester visible ici - sinon
+        # cet argent disparait de la vue tout en continuant a compter dans
+        # le reste a assigner (budget.ready_to_assign inclut aussi les
+        # categories archivees), ce qui le rendrait invisible et
+        # irrecuperable depuis l'interface.
+        active_categories = self.db.list_categories(include_archived=False)
+        active_ids = {c["id"] for c in active_categories}
+        archived_with_balance = [
+            c for c in self.db.list_categories(include_archived=True)
+            if c["id"] not in active_ids and bg.category_available(self.db, c["id"], self.current_month) != 0
+        ]
+        for category in active_categories + archived_with_balance:
+            is_archived = category["id"] not in active_ids
             budgeted = self.db.get_budget_entry(category["id"], self.current_month)
             activity = bg.category_activity_for_month(self.db, category["id"], self.current_month)
             available = bg.category_available(self.db, category["id"], self.current_month)
+            name = category["name"] + (" (archivee)" if is_archived else "")
+            tags = []
+            if available < 0:
+                tags.append("overspent")
+            if is_archived:
+                tags.append("archived")
             self.budget_tree.insert("", END, iid=str(category["id"]), values=(
-                category["group_name"] or "-", category["name"],
+                category["group_name"] or "-", name,
                 bg.format_amount(budgeted), bg.format_amount(activity), bg.format_amount(available),
-            ))
+            ), tags=tuple(tags))
         ready = bg.ready_to_assign(self.db, self.current_month)
         self.ready_to_assign_var.set(f"Reste a assigner : {bg.format_amount(ready)}")
+
+    def _copy_previous_month_budget(self):
+        previous_month = bg.shift_month(self.current_month, -1)
+        copied = 0
+        for category in self.db.list_categories():
+            already_set = self.db.get_budget_entry(category["id"], self.current_month)
+            if already_set:
+                continue  # ne jamais ecraser une saisie deja faite pour ce mois
+            previous_amount = self.db.get_budget_entry(category["id"], previous_month)
+            if previous_amount:
+                self.db.set_budget_entry(category["id"], self.current_month, previous_amount)
+                copied += 1
+        self._refresh_budget()
+        if copied:
+            messagebox.showinfo(APP_TITLE, f"{copied} categorie(s) mise(s) a jour depuis {bg.month_label(previous_month)}.")
+        else:
+            messagebox.showinfo(APP_TITLE, "Rien a copier : aucune assignation trouvee le mois precedent, ou tout est deja assigne ce mois-ci.")
 
     def _edit_budget_entry(self, event=None):
         selection = self.budget_tree.selection()
@@ -345,10 +385,12 @@ class EnveloppeApp:
             self.transactions_tree.heading(col, text=label)
             self.transactions_tree.column(col, width=width, anchor="w")
         self.transactions_tree.pack(fill=BOTH, expand=True, padx=10, pady=(5, 5))
+        self.transactions_tree.bind("<Double-1>", self._edit_transaction)
 
         actions = ttk.Frame(frame)
         actions.pack(fill=X, padx=10, pady=(0, 10))
-        ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=LEFT)
+        ttk.Label(actions, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
+        ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=RIGHT)
 
     def _refresh_transaction_account_choices(self):
         accounts, labels = self._account_choices()
@@ -424,6 +466,84 @@ class EnveloppeApp:
         self._refresh_transactions()
         self._refresh_accounts()
         self._refresh_budget()
+
+    def _edit_transaction(self, event=None):
+        selection = self.transactions_tree.selection()
+        if not selection:
+            return
+        transaction_id = int(selection[0])
+        tx = self.db.get_transaction(transaction_id)
+        if tx is None:
+            return
+
+        from tkinter import Toplevel
+
+        dialog = Toplevel(self.root)
+        dialog.title("Modifier la transaction")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        _, account_labels = self._account_choices()
+        _, category_labels = self._category_choices()
+        account_label = next((l for l in account_labels if l.startswith(f"{tx['account_id']} - ")), "")
+        category_label = ""
+        if tx["category_id"] is not None:
+            category_label = next((l for l in category_labels if l.startswith(f"{tx['category_id']} - ")), "")
+
+        account_var = StringVar(value=account_label)
+        category_var = StringVar(value=category_label)
+        date_var = StringVar(value=tx["date"])
+        payee_var = StringVar(value=tx["payee"])
+        amount_var = StringVar(value=str(tx["amount"]))
+
+        ttk.Label(dialog, text="Compte").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 0))
+        account_combo = ttk.Combobox(dialog, textvariable=account_var, values=account_labels, width=25, state="readonly")
+        account_combo.grid(row=0, column=1, padx=10, pady=(10, 0))
+        ttk.Label(dialog, text="Categorie").grid(row=1, column=0, sticky="w", padx=10)
+        category_combo = ttk.Combobox(dialog, textvariable=category_var, values=category_labels, width=25, state="readonly")
+        category_combo.grid(row=1, column=1, padx=10)
+        ttk.Label(dialog, text="Date (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", padx=10)
+        ttk.Entry(dialog, textvariable=date_var, width=15).grid(row=2, column=1, sticky="w", padx=10)
+        ttk.Label(dialog, text="Beneficiaire").grid(row=3, column=0, sticky="w", padx=10)
+        ttk.Entry(dialog, textvariable=payee_var, width=25).grid(row=3, column=1, padx=10)
+        ttk.Label(dialog, text="Montant").grid(row=4, column=0, sticky="w", padx=10)
+        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
+
+        def on_save():
+            account_id = self._parse_id(account_var.get())
+            if account_id is None:
+                messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
+                return
+            category_id = self._parse_id(category_var.get())
+            date_text = date_var.get().strip()
+            try:
+                from datetime import date as _date
+                _date.fromisoformat(date_text)
+            except ValueError:
+                messagebox.showwarning(APP_TITLE, "La date doit etre au format AAAA-MM-JJ.")
+                return
+            try:
+                amount = self._parse_float(amount_var.get(), "Le montant")
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc))
+                return
+            if amount == 0:
+                messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
+                return
+            self.db.update_transaction(
+                transaction_id, account_id=account_id, category_id=category_id,
+                date=date_text, payee=payee_var.get().strip(), amount=amount,
+            )
+            dialog.destroy()
+            self._refresh_transactions()
+            self._refresh_accounts()
+            self._refresh_budget()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, pady=(0, 10))
+        ttk.Button(buttons, text="Enregistrer", command=on_save).pack(side=LEFT, padx=5)
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
 
     # -- fermeture ------------------------------------------------------------
 
