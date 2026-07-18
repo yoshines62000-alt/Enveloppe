@@ -58,11 +58,13 @@ class EnveloppeApp:
         self.transactions_tab = ttk.Frame(notebook)
         self.reports_tab = ttk.Frame(notebook)
         self.annual_tab = ttk.Frame(notebook)
+        self.recurring_tab = ttk.Frame(notebook)
 
         notebook.add(self.accounts_tab, text="Comptes")
         notebook.add(self.categories_tab, text="Categories")
         notebook.add(self.budget_tab, text="Budget")
         notebook.add(self.transactions_tab, text="Transactions")
+        notebook.add(self.recurring_tab, text="Recurrentes")
         notebook.add(self.reports_tab, text="Rapports")
         notebook.add(self.annual_tab, text="Vue annuelle")
 
@@ -70,6 +72,7 @@ class EnveloppeApp:
         self._build_categories_tab()
         self._build_budget_tab()
         self._build_transactions_tab()
+        self._build_recurring_tab()
         self._build_reports_tab()
         self._build_annual_tab()
 
@@ -77,10 +80,17 @@ class EnveloppeApp:
         self._refresh_categories()
         self._refresh_budget()
         self._refresh_transactions()
+        self._refresh_recurring()
         self._refresh_reports()
         self._refresh_annual()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Genere les transactions recurrentes dues avant que l'utilisateur ne
+        # commence a consulter ses comptes, pour que les soldes affiches des
+        # l'ouverture soient deja a jour. Differe via after() (pas
+        # d'appel direct dans __init__) pour laisser la fenetre principale
+        # s'afficher d'abord.
+        self.root.after(200, self._auto_generate_recurring)
 
     # -- utilitaires communs --------------------------------------------------
 
@@ -795,6 +805,148 @@ class EnveloppeApp:
         buttons.grid(row=5, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(buttons, text="Enregistrer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+
+    # -- onglet Recurrentes -----------------------------------------------------
+
+    _RECURRING_FREQUENCY_LABELS = {"weekly": "Hebdomadaire", "monthly": "Mensuelle", "yearly": "Annuelle"}
+    _RECURRING_FREQUENCY_VALUES = {v: k for k, v in _RECURRING_FREQUENCY_LABELS.items()}
+
+    def _build_recurring_tab(self):
+        frame = self.recurring_tab
+        form = ttk.Frame(frame)
+        form.pack(fill=X, padx=10, pady=10)
+
+        self.rec_account_var = StringVar()
+        self.rec_category_var = StringVar()
+        self.rec_frequency_var = StringVar(value="Mensuelle")
+        from datetime import date as _date
+        self.rec_date_var = StringVar(value=_date.today().isoformat())
+        self.rec_payee_var = StringVar()
+        self.rec_amount_var = StringVar()
+
+        ttk.Label(form, text="Compte").grid(row=0, column=0, sticky="w")
+        self.rec_account_combo = ttk.Combobox(form, textvariable=self.rec_account_var, width=20, state="readonly")
+        self.rec_account_combo.grid(row=0, column=1, padx=5)
+        ttk.Label(form, text="Categorie").grid(row=0, column=2, sticky="w")
+        self.rec_category_combo = ttk.Combobox(form, textvariable=self.rec_category_var, width=20, state="readonly")
+        self.rec_category_combo.grid(row=0, column=3, padx=5)
+        ttk.Label(form, text="Frequence").grid(row=0, column=4, sticky="w")
+        ttk.Combobox(
+            form, textvariable=self.rec_frequency_var, width=14, state="readonly",
+            values=list(self._RECURRING_FREQUENCY_LABELS.values()),
+        ).grid(row=0, column=5, padx=5)
+
+        ttk.Label(form, text="Beneficiaire").grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(form, textvariable=self.rec_payee_var, width=25).grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
+        ttk.Label(form, text="Montant (negatif = depense)").grid(row=1, column=3, sticky="w", pady=(5, 0))
+        ttk.Entry(form, textvariable=self.rec_amount_var, width=12).grid(row=1, column=4, pady=(5, 0))
+        ttk.Label(form, text="Premiere echeance (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", pady=(5, 0))
+        ttk.Entry(form, textvariable=self.rec_date_var, width=12).grid(row=2, column=1, sticky="w", pady=(5, 0))
+        ttk.Button(form, text="Ajouter", command=self._add_recurring).grid(row=2, column=5, pady=(5, 0))
+
+        columns = ("id", "next_date", "frequency", "account", "payee", "category", "amount")
+        self.recurring_tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
+        for col, label, width in [
+            ("id", "ID", 40), ("next_date", "Prochaine echeance", 130), ("frequency", "Frequence", 100),
+            ("account", "Compte", 140), ("payee", "Beneficiaire", 160),
+            ("category", "Categorie", 140), ("amount", "Montant", 100),
+        ]:
+            self.recurring_tree.heading(col, text=label)
+            self.recurring_tree.column(col, width=width, anchor="w")
+        self.recurring_tree.pack(fill=BOTH, expand=True, padx=10, pady=(5, 5))
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Label(
+            actions,
+            text="Les echeances dues sont generees automatiquement a l'ouverture. Aucune suppression de compte/categorie n'est jamais automatique.",
+            foreground="#666",
+        ).pack(side=LEFT)
+        ttk.Button(actions, text="Generer maintenant", command=self._generate_recurring_now).pack(side=RIGHT)
+        ttk.Button(actions, text="Supprimer le modele", command=self._delete_recurring).pack(side=RIGHT, padx=(0, 5))
+
+    def _refresh_recurring_choices(self):
+        _, account_labels = self._account_choices()
+        self.rec_account_combo["values"] = account_labels
+        _, category_labels = self._category_choices()
+        self.rec_category_combo["values"] = category_labels
+
+    def _refresh_recurring(self):
+        self._refresh_recurring_choices()
+        self.recurring_tree.delete(*self.recurring_tree.get_children())
+        for template in self.db.list_recurring_transactions():
+            self.recurring_tree.insert("", END, iid=str(template["id"]), values=(
+                template["id"], template["next_date"],
+                self._RECURRING_FREQUENCY_LABELS.get(template["frequency"], template["frequency"]),
+                template["account_name"], template["payee"],
+                template["category_name"] or "", f"{template['amount']:.2f}",
+            ))
+
+    def _add_recurring(self):
+        account_id = self._parse_id(self.rec_account_var.get())
+        if account_id is None:
+            messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
+            return
+        category_id = self._parse_id(self.rec_category_var.get())
+        date_text = self.rec_date_var.get().strip()
+        try:
+            from datetime import date as _date
+            _date.fromisoformat(date_text)
+        except ValueError:
+            messagebox.showwarning(APP_TITLE, "La date doit etre au format AAAA-MM-JJ.")
+            return
+        try:
+            amount = self._parse_float(self.rec_amount_var.get(), "Le montant")
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return
+        if amount == 0:
+            messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
+            return
+        frequency = self._RECURRING_FREQUENCY_VALUES.get(self.rec_frequency_var.get(), "monthly")
+        self.db.add_recurring_transaction(
+            account_id, date_text, amount, frequency, category_id=category_id, payee=self.rec_payee_var.get(),
+        )
+        self.rec_payee_var.set("")
+        self.rec_amount_var.set("")
+        self._refresh_recurring()
+
+    def _delete_recurring(self):
+        selection = self.recurring_tree.selection()
+        if not selection:
+            messagebox.showinfo(APP_TITLE, "Selectionnez un modele d'abord.")
+            return
+        if not messagebox.askyesno(APP_TITLE, "Supprimer ce modele de transaction recurrente ?"):
+            return
+        self.db.delete_recurring_transaction(int(selection[0]))
+        self._refresh_recurring()
+
+    def _generate_recurring_now(self):
+        created_ids = self.db.generate_due_recurring_transactions()
+        self._refresh_recurring()
+        self._refresh_transactions()
+        self._refresh_accounts()
+        self._refresh_budget()
+        if created_ids:
+            plural = "s" if len(created_ids) > 1 else ""
+            messagebox.showinfo(APP_TITLE, f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural}.")
+        else:
+            messagebox.showinfo(APP_TITLE, "Aucune echeance due pour le moment.")
+
+    def _auto_generate_recurring(self):
+        # Silencieux si rien n'est du (cas courant) : seule une generation
+        # reelle merite d'interrompre l'utilisateur a l'ouverture.
+        created_ids = self.db.generate_due_recurring_transactions()
+        if not created_ids:
+            return
+        self._refresh_recurring()
+        self._refresh_transactions()
+        self._refresh_accounts()
+        self._refresh_budget()
+        plural = "s" if len(created_ids) > 1 else ""
+        messagebox.showinfo(
+            APP_TITLE, f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural} automatiquement."
+        )
 
     # -- onglet Rapports -------------------------------------------------------
 

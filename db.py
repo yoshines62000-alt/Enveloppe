@@ -95,6 +95,19 @@ class Database:
             amount REAL NOT NULL,
             memo TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS recurring_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL REFERENCES accounts(id),
+            category_id INTEGER REFERENCES categories(id),
+            payee TEXT NOT NULL DEFAULT '',
+            memo TEXT NOT NULL DEFAULT '',
+            amount REAL NOT NULL,
+            frequency TEXT NOT NULL,
+            next_date TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL
+        );
         """)
         self.conn.commit()
         # transfer_id a ete ajoutee apres la sortie initiale : les bases
@@ -346,6 +359,105 @@ class Database:
         self.delete_transaction(transaction_id)
         if partner_id is not None:
             self.delete_transaction(partner_id)
+
+    # -- transactions recurrentes -----------------------------------------
+
+    _RECURRING_FREQUENCIES = ("weekly", "monthly", "yearly")
+
+    def add_recurring_transaction(
+        self, account_id: int, date: str, amount: float, frequency: str,
+        category_id: Optional[int] = None, payee: str = "", memo: str = "",
+    ) -> int:
+        _validate_date(date)
+        if frequency not in self._RECURRING_FREQUENCIES:
+            raise ValueError(f"Frequence invalide : {frequency!r}")
+        cur = self.conn.execute(
+            """INSERT INTO recurring_transactions
+               (account_id, category_id, payee, memo, amount, frequency, next_date, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (account_id, category_id, payee.strip(), memo.strip(), amount, frequency, date, _now_iso()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_recurring_transactions(self, include_inactive: bool = False) -> list:
+        query = """
+            SELECT recurring_transactions.*, accounts.name AS account_name, categories.name AS category_name
+            FROM recurring_transactions
+            JOIN accounts ON accounts.id = recurring_transactions.account_id
+            LEFT JOIN categories ON categories.id = recurring_transactions.category_id
+        """
+        if not include_inactive:
+            query += " WHERE recurring_transactions.active = 1"
+        query += " ORDER BY recurring_transactions.next_date"
+        return self.conn.execute(query).fetchall()
+
+    def update_recurring_transaction(self, recurring_id: int, **fields) -> None:
+        allowed = {"account_id", "category_id", "payee", "memo", "amount", "frequency", "next_date", "active"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        if "frequency" in updates and updates["frequency"] not in self._RECURRING_FREQUENCIES:
+            raise ValueError(f"Frequence invalide : {updates['frequency']!r}")
+        if "next_date" in updates:
+            _validate_date(updates["next_date"])
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        self.conn.execute(
+            f"UPDATE recurring_transactions SET {set_clause} WHERE id = ?", (*updates.values(), recurring_id)
+        )
+        self.conn.commit()
+
+    def delete_recurring_transaction(self, recurring_id: int) -> None:
+        self.conn.execute("DELETE FROM recurring_transactions WHERE id = ?", (recurring_id,))
+        self.conn.commit()
+
+    @staticmethod
+    def _advance_date(date_str: str, frequency: str) -> str:
+        """Calcule la prochaine echeance apres `date_str` pour une frequence
+        donnee. Le mensuel/annuel ramene toujours le jour au dernier jour du
+        mois cible s'il deborde (ex: 31 janvier + mensuel -> 28/29 fevrier,
+        jamais une ValueError ni un glissement silencieux vers mars)."""
+        import calendar
+        from datetime import date as _date, timedelta as _timedelta
+
+        current = _date.fromisoformat(date_str)
+        if frequency == "weekly":
+            return (current + _timedelta(days=7)).isoformat()
+        if frequency == "monthly":
+            month = current.month + 1
+            year = current.year + (1 if month > 12 else 0)
+            month = month if month <= 12 else 1
+        elif frequency == "yearly":
+            month = current.month
+            year = current.year + 1
+        else:
+            raise ValueError(f"Frequence invalide : {frequency!r}")
+        last_day = calendar.monthrange(year, month)[1]
+        day = min(current.day, last_day)
+        return _date(year, month, day).isoformat()
+
+    def generate_due_recurring_transactions(self, as_of: Optional[str] = None) -> list:
+        """Cree une vraie transaction pour chaque echeance passee (ou du
+        jour) de chaque modele actif, et avance next_date jusqu'a depasser
+        `as_of` - en rattrapant plusieurs occurrences manquees d'un coup si
+        l'application n'a pas ete ouverte depuis un moment (ex: 2 loyers
+        mensuels manques generent bien 2 transactions, pas une seule).
+        Renvoie la liste des ids de transactions creees."""
+        if as_of is None:
+            as_of = datetime.now(timezone.utc).date().isoformat()
+        created_ids = []
+        for template in self.list_recurring_transactions():
+            next_date = template["next_date"]
+            while next_date <= as_of:
+                new_id = self.add_transaction(
+                    template["account_id"], next_date, template["amount"],
+                    category_id=template["category_id"], payee=template["payee"], memo=template["memo"],
+                )
+                created_ids.append(new_id)
+                next_date = self._advance_date(next_date, template["frequency"])
+            if next_date != template["next_date"]:
+                self.update_recurring_transaction(template["id"], next_date=next_date)
+        return created_ids
 
     def list_transactions(
         self, account_id: Optional[int] = None, category_id: Optional[int] = None,

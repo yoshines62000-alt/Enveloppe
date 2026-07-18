@@ -402,5 +402,83 @@ class TransactionSplitTestCase(unittest.TestCase):
         self.assertIsNone(self.db.get_transaction(self.transaction_id)["category_id"])
 
 
+class RecurringTransactionTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.account_id = self.db.add_account("Compte courant", starting_balance=0.0)
+        self.category_id = self.db.add_category("Loyer")
+
+    def test_add_and_list_recurring_transaction(self):
+        rec_id = self.db.add_recurring_transaction(
+            self.account_id, "2026-01-01", -800.0, "monthly",
+            category_id=self.category_id, payee="Proprietaire",
+        )
+        templates = self.db.list_recurring_transactions()
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]["id"], rec_id)
+        self.assertEqual(templates[0]["next_date"], "2026-01-01")
+
+    def test_add_recurring_transaction_rejects_invalid_frequency(self):
+        with self.assertRaises(ValueError):
+            self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "daily")
+
+    def test_generate_due_creates_a_real_transaction_and_advances_next_date(self):
+        self.db.add_recurring_transaction(
+            self.account_id, "2026-01-01", -800.0, "monthly",
+            category_id=self.category_id, payee="Proprietaire",
+        )
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-01-15")
+        self.assertEqual(len(created_ids), 1)
+        tx = self.db.get_transaction(created_ids[0])
+        self.assertEqual(tx["date"], "2026-01-01")
+        self.assertEqual(tx["amount"], -800.0)
+        self.assertEqual(tx["payee"], "Proprietaire")
+        template = self.db.list_recurring_transactions()[0]
+        self.assertEqual(template["next_date"], "2026-02-01")
+
+    def test_generate_due_catches_up_multiple_missed_occurrences(self):
+        self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
+        # L'app n'a pas ete ouverte depuis 3 mois : les 3 echeances manquees
+        # doivent toutes etre generees, pas seulement la derniere.
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-03-15")
+        self.assertEqual(len(created_ids), 3)
+        dates = sorted(self.db.get_transaction(tid)["date"] for tid in created_ids)
+        self.assertEqual(dates, ["2026-01-01", "2026-02-01", "2026-03-01"])
+
+    def test_generate_due_does_nothing_when_next_date_is_in_the_future(self):
+        self.db.add_recurring_transaction(self.account_id, "2026-06-01", -800.0, "monthly")
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-01-15")
+        self.assertEqual(created_ids, [])
+
+    def test_generate_due_ignores_inactive_templates(self):
+        rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
+        self.db.update_recurring_transaction(rec_id, active=0)
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-01-15")
+        self.assertEqual(created_ids, [])
+
+    def test_advance_date_monthly_clamps_to_last_day_of_shorter_month(self):
+        # 31 janvier + mensuel ne doit jamais lever d'exception ni sauter a
+        # mars : le jour est ramene au dernier jour de fevrier.
+        self.assertEqual(Database._advance_date("2026-01-31", "monthly"), "2026-02-28")
+
+    def test_advance_date_yearly_handles_leap_day(self):
+        self.assertEqual(Database._advance_date("2028-02-29", "yearly"), "2029-02-28")
+
+    def test_advance_date_weekly_adds_seven_days(self):
+        self.assertEqual(Database._advance_date("2026-01-01", "weekly"), "2026-01-08")
+
+    def test_delete_recurring_transaction_removes_it(self):
+        rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
+        self.db.delete_recurring_transaction(rec_id)
+        self.assertEqual(self.db.list_recurring_transactions(), [])
+
+    def test_update_recurring_transaction_rejects_invalid_frequency(self):
+        rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
+        with self.assertRaises(ValueError):
+            self.db.update_recurring_transaction(rec_id, frequency="daily")
+
+
 if __name__ == "__main__":
     unittest.main()
