@@ -87,6 +87,14 @@ class Database:
             cleared INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS transaction_splits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_id INTEGER NOT NULL REFERENCES transactions(id),
+            category_id INTEGER NOT NULL REFERENCES categories(id),
+            amount REAL NOT NULL,
+            memo TEXT NOT NULL DEFAULT ''
+        );
         """)
         self.conn.commit()
         # transfer_id a ete ajoutee apres la sortie initiale : les bases
@@ -225,6 +233,13 @@ class Database:
             return
         if "date" in updates:
             _validate_date(updates["date"])
+        if "category_id" in updates:
+            # Assigner une categorie unique et etre fractionnee sur
+            # plusieurs categories sont mutuellement exclusifs : on ne
+            # laisse jamais les deux coexister silencieusement (l'ancien
+            # fractionnement deviendrait invisible mais continuerait a
+            # compter dans les enveloppes).
+            self.clear_transaction_splits(transaction_id)
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         self.conn.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", (*updates.values(), transaction_id))
         self.conn.commit()
@@ -236,7 +251,49 @@ class Database:
             # que de la laisser pointer vers une ligne desormais inexistante
             # (voir delete_transfer_pair pour supprimer les deux ensemble).
             self.conn.execute("UPDATE transactions SET transfer_id = NULL WHERE id = ?", (tx["transfer_id"],))
+        self.conn.execute("DELETE FROM transaction_splits WHERE transaction_id = ?", (transaction_id,))
         self.conn.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
+        self.conn.commit()
+
+    def set_transaction_splits(self, transaction_id: int, splits: list) -> None:
+        """Fractionne une transaction sur plusieurs categories. `splits` :
+        liste de {"category_id", "amount", "memo"}. La somme des montants
+        doit correspondre exactement (a l'arrondi pres) au montant total de
+        la transaction - sinon l'argent fractionne ne balancerait plus avec
+        le solde reel du compte. Remplace tout fractionnement existant, et
+        met category_id de la transaction a NULL (son montant est
+        desormais represente uniquement par les lignes de splits)."""
+        tx = self.get_transaction(transaction_id)
+        if tx is None:
+            raise ValueError(f"Transaction introuvable : {transaction_id}")
+        if len(splits) < 2:
+            raise ValueError("Un fractionnement necessite au moins deux categories.")
+        total = round(sum(s["amount"] for s in splits), 2)
+        if abs(total - round(tx["amount"], 2)) > 0.01:
+            raise ValueError(
+                f"La somme des parts ({total:.2f}) ne correspond pas au montant de la transaction ({tx['amount']:.2f})."
+            )
+        self.conn.execute("DELETE FROM transaction_splits WHERE transaction_id = ?", (transaction_id,))
+        for split in splits:
+            self.conn.execute(
+                "INSERT INTO transaction_splits (transaction_id, category_id, amount, memo) VALUES (?, ?, ?, ?)",
+                (transaction_id, split["category_id"], split["amount"], split.get("memo", "").strip()),
+            )
+        self.conn.execute("UPDATE transactions SET category_id = NULL WHERE id = ?", (transaction_id,))
+        self.conn.commit()
+
+    def get_transaction_splits(self, transaction_id: int) -> list:
+        return self.conn.execute(
+            """SELECT transaction_splits.*, categories.name AS category_name
+               FROM transaction_splits
+               JOIN categories ON categories.id = transaction_splits.category_id
+               WHERE transaction_id = ?
+               ORDER BY transaction_splits.id""",
+            (transaction_id,),
+        ).fetchall()
+
+    def clear_transaction_splits(self, transaction_id: int) -> None:
+        self.conn.execute("DELETE FROM transaction_splits WHERE transaction_id = ?", (transaction_id,))
         self.conn.commit()
 
     def get_transaction(self, transaction_id: int) -> Optional[sqlite3.Row]:
@@ -285,7 +342,9 @@ class Database:
         up_to_month: Optional[str] = None,
     ) -> list:
         query = """
-            SELECT transactions.*, accounts.name AS account_name, categories.name AS category_name
+            SELECT transactions.*, accounts.name AS account_name, categories.name AS category_name,
+                   (SELECT COUNT(*) FROM transaction_splits WHERE transaction_splits.transaction_id = transactions.id)
+                       AS split_count
             FROM transactions
             JOIN accounts ON accounts.id = transactions.account_id
             LEFT JOIN categories ON categories.id = transactions.category_id
@@ -305,15 +364,31 @@ class Database:
         return self.conn.execute(query, params).fetchall()
 
     def sum_transactions_up_to(self, category_id: int, month: str) -> float:
+        # Une transaction fractionnee n'a plus de category_id propre (voir
+        # set_transaction_splits) : sa contribution a chaque enveloppe
+        # passe entierement par transaction_splits, d'ou l'UNION ci-dessous
+        # plutot qu'une simple somme sur transactions.category_id.
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE category_id = ? AND substr(date, 1, 7) <= ?",
-            (category_id, month),
+            """SELECT COALESCE(SUM(amount), 0) FROM (
+                SELECT amount FROM transactions WHERE category_id = ? AND substr(date, 1, 7) <= ?
+                UNION ALL
+                SELECT transaction_splits.amount FROM transaction_splits
+                JOIN transactions ON transactions.id = transaction_splits.transaction_id
+                WHERE transaction_splits.category_id = ? AND substr(transactions.date, 1, 7) <= ?
+            )""",
+            (category_id, month, category_id, month),
         ).fetchone()
         return round(row[0], 2)
 
     def sum_transactions_for_month(self, category_id: int, month: str) -> float:
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE category_id = ? AND substr(date, 1, 7) = ?",
-            (category_id, month),
+            """SELECT COALESCE(SUM(amount), 0) FROM (
+                SELECT amount FROM transactions WHERE category_id = ? AND substr(date, 1, 7) = ?
+                UNION ALL
+                SELECT transaction_splits.amount FROM transaction_splits
+                JOIN transactions ON transactions.id = transaction_splits.transaction_id
+                WHERE transaction_splits.category_id = ? AND substr(transactions.date, 1, 7) = ?
+            )""",
+            (category_id, month, category_id, month),
         ).fetchone()
         return round(row[0], 2)

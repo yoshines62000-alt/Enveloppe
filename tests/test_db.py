@@ -251,5 +251,119 @@ class TransferTestCase(unittest.TestCase):
         reopened.add_transfer(1, savings_id, "2026-01-10", 50.0)
 
 
+class TransactionSplitTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.account_id = self.db.add_account("Compte", starting_balance=1000.0)
+        self.groceries_id = self.db.add_category("Epicerie")
+        self.household_id = self.db.add_category("Maison")
+        self.transaction_id = self.db.add_transaction(
+            self.account_id, "2026-01-05", -100.0, category_id=self.groceries_id, payee="Grand magasin",
+        )
+
+    def test_setting_splits_clears_the_transaction_own_category(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        tx = self.db.get_transaction(self.transaction_id)
+        self.assertIsNone(tx["category_id"])
+
+    def test_split_amounts_must_sum_to_the_transaction_amount(self):
+        with self.assertRaises(ValueError):
+            self.db.set_transaction_splits(self.transaction_id, [
+                {"category_id": self.groceries_id, "amount": -60.0},
+                {"category_id": self.household_id, "amount": -30.0},  # ne totalise que -90, pas -100
+            ])
+
+    def test_a_single_split_is_rejected_as_not_a_real_split(self):
+        with self.assertRaises(ValueError):
+            self.db.set_transaction_splits(self.transaction_id, [{"category_id": self.groceries_id, "amount": -100.0}])
+
+    def test_get_transaction_splits_returns_the_stored_rows_with_category_name(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0, "memo": "Nourriture"},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        splits = self.db.get_transaction_splits(self.transaction_id)
+        self.assertEqual(len(splits), 2)
+        self.assertEqual(splits[0]["category_name"], "Epicerie")
+        self.assertEqual(splits[0]["memo"], "Nourriture")
+
+    def test_budget_activity_sums_splits_instead_of_the_absent_category_id(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.assertEqual(self.db.sum_transactions_for_month(self.groceries_id, "2026-01"), -60.0)
+        self.assertEqual(self.db.sum_transactions_for_month(self.household_id, "2026-01"), -40.0)
+        self.assertEqual(self.db.sum_transactions_up_to(self.groceries_id, "2026-01"), -60.0)
+
+    def test_a_split_transaction_is_not_double_counted_via_its_own_now_null_category(self):
+        # Avant fractionnement, toute la depense comptait sur Epicerie ;
+        # apres, seule la part fractionnee doit compter - jamais les deux.
+        before = self.db.sum_transactions_for_month(self.groceries_id, "2026-01")
+        self.assertEqual(before, -100.0)
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        after = self.db.sum_transactions_for_month(self.groceries_id, "2026-01")
+        self.assertEqual(after, -60.0)
+
+    def test_re_splitting_replaces_the_previous_split_rather_than_accumulating(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -100.0},
+            {"category_id": self.household_id, "amount": 0.0},
+        ])
+        splits = self.db.get_transaction_splits(self.transaction_id)
+        self.assertEqual(len(splits), 2)
+        self.assertEqual(self.db.sum_transactions_for_month(self.groceries_id, "2026-01"), -100.0)
+
+    def test_deleting_a_split_transaction_removes_its_split_rows_too(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.delete_transaction(self.transaction_id)
+        self.assertEqual(self.db.get_transaction_splits(self.transaction_id), [])
+
+    def test_assigning_a_new_category_via_update_transaction_clears_an_existing_split(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.update_transaction(self.transaction_id, category_id=self.household_id)
+        self.assertEqual(self.db.get_transaction_splits(self.transaction_id), [])
+        self.assertEqual(self.db.get_transaction(self.transaction_id)["category_id"], self.household_id)
+
+    def test_list_transactions_reports_a_split_count_for_split_transactions(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        tx = self.db.list_transactions()[0]
+        self.assertEqual(tx["split_count"], 2)
+
+    def test_list_transactions_reports_zero_split_count_for_an_ordinary_transaction(self):
+        tx = self.db.list_transactions()[0]
+        self.assertEqual(tx["split_count"], 0)
+
+    def test_clear_transaction_splits_removes_the_splits_without_restoring_a_category(self):
+        self.db.set_transaction_splits(self.transaction_id, [
+            {"category_id": self.groceries_id, "amount": -60.0},
+            {"category_id": self.household_id, "amount": -40.0},
+        ])
+        self.db.clear_transaction_splits(self.transaction_id)
+        self.assertEqual(self.db.get_transaction_splits(self.transaction_id), [])
+        self.assertIsNone(self.db.get_transaction(self.transaction_id)["category_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

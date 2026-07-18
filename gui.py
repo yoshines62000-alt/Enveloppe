@@ -403,6 +403,90 @@ class EnveloppeApp:
         ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Exporter en CSV...", command=self._export_transactions_csv).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Virement entre comptes...", command=self._open_transfer_dialog).pack(side=RIGHT, padx=(0, 5))
+        ttk.Button(actions, text="Fractionner...", command=self._open_split_dialog).pack(side=RIGHT, padx=(0, 5))
+
+    def _open_split_dialog(self):
+        selection = self.transactions_tree.selection()
+        if not selection:
+            messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
+            return
+        transaction_id = int(selection[0])
+        tx = self.db.get_transaction(transaction_id)
+        if tx is None:
+            return
+        if tx["transfer_id"] is not None:
+            messagebox.showwarning(APP_TITLE, "Une jambe de virement ne peut pas etre fractionnee.")
+            return
+
+        category_rows, category_labels = self._category_choices()
+        existing_splits = self.db.get_transaction_splits(transaction_id)
+
+        from tkinter import Toplevel
+
+        dialog = Toplevel(self.root)
+        dialog.title("Fractionner la transaction")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog, text=f"Montant total a repartir : {bg.format_amount(tx['amount'])}",
+            font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(10, 5))
+
+        rows_frame = ttk.Frame(dialog)
+        rows_frame.grid(row=1, column=0, columnspan=3, padx=10)
+        split_rows = []
+
+        def add_row(category_value="", amount_value="", memo_value=""):
+            row_index = len(split_rows)
+            category_var = StringVar(value=category_value)
+            amount_var = StringVar(value=amount_value)
+            memo_var = StringVar(value=memo_value)
+            combo = ttk.Combobox(rows_frame, textvariable=category_var, values=category_labels, width=22, state="readonly")
+            combo.grid(row=row_index, column=0, padx=(0, 5), pady=2)
+            amount_entry = ttk.Entry(rows_frame, textvariable=amount_var, width=10)
+            amount_entry.grid(row=row_index, column=1, padx=5, pady=2)
+            memo_entry = ttk.Entry(rows_frame, textvariable=memo_var, width=18)
+            memo_entry.grid(row=row_index, column=2, padx=5, pady=2)
+            split_rows.append({"category_var": category_var, "amount_var": amount_var, "memo_var": memo_var})
+
+        if existing_splits:
+            for split in existing_splits:
+                label = next((l for l, r in zip(category_labels, category_rows) if r["id"] == split["category_id"]), "")
+                add_row(label, f"{split['amount']:.2f}", split["memo"])
+        else:
+            add_row()
+            add_row()
+
+        ttk.Button(dialog, text="+ Ajouter une part", command=add_row).grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
+
+        def on_save():
+            splits = []
+            for row in split_rows:
+                if not row["category_var"].get():
+                    continue
+                try:
+                    amount = float(row["amount_var"].get())
+                except ValueError:
+                    messagebox.showwarning(APP_TITLE, "Chaque part doit avoir un montant numerique.", parent=dialog)
+                    return
+                splits.append({
+                    "category_id": self._parse_id(row["category_var"].get()),
+                    "amount": amount, "memo": row["memo_var"].get().strip(),
+                })
+            try:
+                self.db.set_transaction_splits(transaction_id, splits)
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._refresh_transactions()
+            self._refresh_budget()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=3, column=0, columnspan=3, pady=10)
+        ttk.Button(buttons, text="Enregistrer le fractionnement", command=on_save).pack(side=LEFT, padx=5)
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
 
     def _export_transactions_csv(self):
         from tkinter import filedialog
@@ -503,7 +587,12 @@ class EnveloppeApp:
         if filter_value and filter_value != "Tous":
             account_id = self._parse_id(filter_value)
         for tx in self.db.list_transactions(account_id=account_id):
-            category_label = "Virement" if tx["transfer_id"] is not None else (tx["category_name"] or "-")
+            if tx["transfer_id"] is not None:
+                category_label = "Virement"
+            elif tx["split_count"]:
+                category_label = f"Fractionnee ({tx['split_count']})"
+            else:
+                category_label = tx["category_name"] or "-"
             self.transactions_tree.insert("", END, iid=str(tx["id"]), values=(
                 tx["id"], tx["date"], tx["account_name"], tx["payee"],
                 category_label, bg.format_amount(tx["amount"]),
