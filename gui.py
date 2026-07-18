@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
 
 import budget as bg
+from csv_transactions import CsvImportError, export_transactions_csv, import_transactions_csv
 from db import Database
 
 APP_TITLE = "Enveloppe"
@@ -395,6 +396,49 @@ class EnveloppeApp:
         actions.pack(fill=X, padx=10, pady=(0, 10))
         ttk.Label(actions, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
         ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=RIGHT)
+        ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv).pack(side=RIGHT, padx=(0, 5))
+        ttk.Button(actions, text="Exporter en CSV...", command=self._export_transactions_csv).pack(side=RIGHT, padx=(0, 5))
+
+    def _export_transactions_csv(self):
+        from tkinter import filedialog
+
+        output = filedialog.asksaveasfilename(
+            title="Exporter les transactions", initialfile="transactions.csv", defaultextension=".csv",
+            filetypes=[("Fichier CSV", "*.csv")],
+        )
+        if not output:
+            return
+        account_id = self._parse_id(self.tx_filter_account_var.get()) if self.tx_filter_account_var.get() and self.tx_filter_account_var.get() != "Tous" else None
+        export_transactions_csv(self.db.list_transactions(account_id=account_id), Path(output))
+        messagebox.showinfo(APP_TITLE, f"Transactions exportees : {Path(output).name}")
+
+    def _import_transactions_csv(self):
+        from tkinter import filedialog
+
+        input_path = filedialog.askopenfilename(title="Importer des transactions", filetypes=[("Fichier CSV", "*.csv")])
+        if not input_path:
+            return
+        default_account_id = None
+        accounts = self.db.list_accounts()
+        if len(accounts) == 1:
+            # Repli naturel quand un seul compte existe : un CSV exporte
+            # depuis un autre outil ne connait pas forcement son nom exact.
+            default_account_id = accounts[0]["id"]
+        try:
+            result = import_transactions_csv(self.db, Path(input_path), default_account_id=default_account_id)
+        except CsvImportError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return
+        self._refresh_transactions()
+        self._refresh_accounts()
+        self._refresh_budget()
+        message = f"{result['imported']} transaction(s) importee(s)."
+        if result["skipped"]:
+            message += f"\n{len(result['skipped'])} ligne(s) ignoree(s) :\n"
+            message += "\n".join(f"  ligne {s['line']} : {s['reason']}" for s in result["skipped"][:10])
+            if len(result["skipped"]) > 10:
+                message += f"\n  ... et {len(result['skipped']) - 10} autre(s)."
+        messagebox.showinfo(APP_TITLE, message)
 
     def _refresh_transaction_account_choices(self):
         accounts, labels = self._account_choices()
