@@ -7,14 +7,31 @@ format YYYY-MM, pour permettre des comparaisons lexicographiques directes
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+_MONTH_FORMAT_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+_DATE_FORMAT_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _validate_month(month: str) -> None:
+    # Le format strict YYYY-MM (zero-pad) est indispensable : toutes les
+    # comparaisons de mois dans ce module sont lexicographiques (month <= ?),
+    # un mois non conforme (ex : "2026-1") les corromprait silencieusement.
+    if not _MONTH_FORMAT_RE.match(month):
+        raise ValueError(f"Format de mois invalide : {month!r} (attendu YYYY-MM)")
+
+
+def _validate_date(date_str: str) -> None:
+    if not _DATE_FORMAT_RE.match(date_str):
+        raise ValueError(f"Format de date invalide : {date_str!r} (attendu YYYY-MM-DD)")
 
 
 class Database:
@@ -112,7 +129,12 @@ class Database:
         return round(account["starting_balance"] + row[0], 2)
 
     def total_on_budget_balance(self) -> float:
-        return round(sum(self.account_balance(a["id"]) for a in self.list_accounts(include_archived=False)), 2)
+        # Inclut les comptes archives : "archiver" ne fait que les masquer
+        # des listes deroulantes de saisie, jamais disparaitre l'argent
+        # qu'ils contiennent reellement - sinon archiver un compte non-vide
+        # fausserait instantanement le "reste a assigner" (voir budget.py:
+        # ready_to_assign) sans qu'aucun argent n'ait bouge.
+        return round(sum(self.account_balance(a["id"]) for a in self.list_accounts(include_archived=True)), 2)
 
     # -- categories -------------------------------------------------------------
 
@@ -146,6 +168,7 @@ class Database:
     # -- budget (assignations mensuelles) -----------------------------------------
 
     def set_budget_entry(self, category_id: int, month: str, assigned: float) -> None:
+        _validate_month(month)
         self.conn.execute(
             """INSERT INTO budget_entries (category_id, month, assigned) VALUES (?, ?, ?)
                ON CONFLICT(category_id, month) DO UPDATE SET assigned = excluded.assigned""",
@@ -176,6 +199,7 @@ class Database:
         self, account_id: int, date: str, amount: float,
         category_id: Optional[int] = None, payee: str = "", memo: str = "", cleared: bool = False,
     ) -> int:
+        _validate_date(date)
         cur = self.conn.execute(
             """INSERT INTO transactions (account_id, category_id, date, payee, memo, amount, cleared, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -189,6 +213,8 @@ class Database:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
+        if "date" in updates:
+            _validate_date(updates["date"])
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         self.conn.execute(f"UPDATE transactions SET {set_clause} WHERE id = ?", (*updates.values(), transaction_id))
         self.conn.commit()

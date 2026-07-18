@@ -19,7 +19,7 @@ from datetime import date
 from typing import Optional
 
 
-_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+_MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 
 
 def month_key(iso_date: str) -> str:
@@ -47,7 +47,7 @@ def month_label(month: str) -> str:
     """Libelle lisible en francais pour un mois 'YYYY-MM'."""
     match = _MONTH_RE.match(month)
     if not match:
-        return month
+        raise ValueError(f"Format de mois invalide : {month!r} (attendu YYYY-MM)")
     names = [
         "Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin",
         "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre",
@@ -78,9 +78,16 @@ def ready_to_assign(db, month: Optional[str] = None) -> float:
     total assigne depuis toujours. La difference compte : depenser de
     l'argent deja assigne reduit a la fois le solde du compte ET le solde de
     l'enveloppe du meme montant, donc ne doit jamais faire bouger le reste a
-    assigner. (sum(solde des enveloppes) + reste a assigner == solde total)."""
+    assigner. (sum(solde des enveloppes) + reste a assigner == solde total).
+
+    Comptes ET categories archives sont INCLUS dans ce calcul (via
+    include_archived=True) : "archiver" ne signifie que "masquer des listes
+    deroulantes pour les nouvelles saisies", jamais "faire disparaitre de
+    l'equation" - sinon archiver un compte qui contient encore de l'argent
+    reel, ou une categorie qui contient encore un solde, fausserait le
+    reste a assigner sans qu'aucun argent n'ait reellement bouge."""
     month = month or current_month()
-    categories = db.list_categories(include_archived=False)
+    categories = db.list_categories(include_archived=True)
     total_in_envelopes = sum(category_available(db, cat["id"], month) for cat in categories)
     return round(db.total_on_budget_balance() - total_in_envelopes, 2)
 

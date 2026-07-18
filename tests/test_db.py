@@ -56,6 +56,31 @@ class DatabaseTestCase(unittest.TestCase):
         self.db.set_budget_entry(category_id, "2026-01", 350.0)
         self.assertEqual(self.db.get_budget_entry(category_id, "2026-01"), 350.0)
 
+    def test_set_budget_entry_rejects_non_zero_padded_month(self):
+        category_id = self.db.add_category("Epicerie")
+        with self.assertRaises(ValueError):
+            self.db.set_budget_entry(category_id, "2026-1", 100.0)
+
+    def test_add_transaction_rejects_malformed_date(self):
+        account_id = self.db.add_account("A")
+        with self.assertRaises(ValueError):
+            self.db.add_transaction(account_id, "2026-1-5", -10.0)
+
+    def test_update_transaction_rejects_malformed_date(self):
+        account_id = self.db.add_account("A")
+        transaction_id = self.db.add_transaction(account_id, "2026-01-05", -10.0)
+        with self.assertRaises(ValueError):
+            self.db.update_transaction(transaction_id, date="not-a-date")
+
+    def test_total_on_budget_balance_includes_archived_accounts(self):
+        # "Archiver" ne fait que masquer un compte des listes de saisie ; son
+        # argent reste reel et doit continuer a compter dans le total,
+        # sinon le "reste a assigner" se desynchronise sans qu'aucun argent
+        # n'ait bouge.
+        account_id = self.db.add_account("Compte", starting_balance=500.0)
+        self.db.update_account(account_id, archived=1)
+        self.assertEqual(self.db.total_on_budget_balance(), 500.0)
+
     def test_get_budget_entry_defaults_to_zero(self):
         category_id = self.db.add_category("Epicerie")
         self.assertEqual(self.db.get_budget_entry(category_id, "2026-05"), 0.0)

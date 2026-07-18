@@ -36,6 +36,18 @@ class MonthHelpersTestCase(unittest.TestCase):
         self.assertEqual(bg.month_label("2026-01"), "Janvier 2026")
         self.assertEqual(bg.month_label("2026-12"), "Decembre 2026")
 
+    def test_month_label_rejects_month_out_of_range(self):
+        with self.assertRaises(ValueError):
+            bg.month_label("2026-13")
+        with self.assertRaises(ValueError):
+            bg.month_label("2026-00")
+
+    def test_shift_month_rejects_month_out_of_range(self):
+        with self.assertRaises(ValueError):
+            bg.shift_month("2026-13", 1)
+        with self.assertRaises(ValueError):
+            bg.shift_month("2026-00", 1)
+
 
 class CategoryAvailableTestCase(unittest.TestCase):
     def setUp(self):
@@ -104,6 +116,26 @@ class ReadyToAssignTestCase(unittest.TestCase):
         # mais n'est assigne a aucune enveloppe.
         self.db.add_transaction(account_id, "2026-01-01", 2000.0, payee="Salaire")
         self.assertEqual(bg.ready_to_assign(self.db), 2000.0)
+
+    def test_archiving_a_nonempty_account_does_not_change_ready_to_assign(self):
+        # Archiver un compte ne fait que le masquer des listes de saisie -
+        # l'argent qu'il contient reste reel et doit continuer a compter.
+        account_id = self.db.add_account("Compte", starting_balance=1000.0)
+        category_id = self.db.add_category("Epicerie")
+        self.db.set_budget_entry(category_id, "2026-01", 300.0)
+        before = bg.ready_to_assign(self.db, "2026-01")
+        self.db.update_account(account_id, archived=1)
+        after = bg.ready_to_assign(self.db, "2026-01")
+        self.assertEqual(before, after)
+
+    def test_archiving_a_nonempty_category_does_not_change_ready_to_assign(self):
+        self.db.add_account("Compte", starting_balance=1000.0)
+        category_id = self.db.add_category("Epicerie")
+        self.db.set_budget_entry(category_id, "2026-01", 300.0)
+        before = bg.ready_to_assign(self.db, "2026-01")
+        self.db.update_category(category_id, archived=1)
+        after = bg.ready_to_assign(self.db, "2026-01")
+        self.assertEqual(before, after)
 
     def test_spending_from_an_envelope_does_not_change_ready_to_assign(self):
         # Ready to Assign ne bouge que par (assignation / argent total) - pas

@@ -167,6 +167,7 @@ class EnveloppeApp:
         self.db.update_account(account_id, archived=0 if account["archived"] else 1)
         self._refresh_accounts()
         self._refresh_budget()
+        self._refresh_transactions()
 
     # -- onglet Categories --------------------------------------------------------
 
@@ -228,6 +229,7 @@ class EnveloppeApp:
         self.db.update_category(category_id, archived=0 if category["archived"] else 1)
         self._refresh_categories()
         self._refresh_budget()
+        self._refresh_transactions()
 
     # -- onglet Budget ------------------------------------------------------------
 
@@ -352,10 +354,20 @@ class EnveloppeApp:
         accounts, labels = self._account_choices()
         self.tx_account_combo["values"] = labels
         self.tx_filter_combo["values"] = ["Tous"] + labels
+        # Une combobox readonly ne valide pas d'elle-meme la variable qui lui
+        # est liee : si le compte selectionne vient d'etre archive (donc
+        # retire de `labels`), le texte reste affiche tel quel et une
+        # nouvelle transaction pourrait encore lui etre rattachee.
+        if self.tx_account_var.get() not in labels:
+            self.tx_account_var.set("")
+        if self.tx_filter_account_var.get() not in labels and self.tx_filter_account_var.get() != "Tous":
+            self.tx_filter_account_var.set("")
 
     def _refresh_transaction_category_choices(self):
         categories, labels = self._category_choices()
         self.tx_category_combo["values"] = labels
+        if self.tx_category_var.get() not in labels:
+            self.tx_category_var.set("")
 
     def _clear_transaction_filter(self):
         self.tx_filter_account_var.set("")
