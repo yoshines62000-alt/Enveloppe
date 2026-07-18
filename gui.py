@@ -55,21 +55,25 @@ class EnveloppeApp:
         self.categories_tab = ttk.Frame(notebook)
         self.budget_tab = ttk.Frame(notebook)
         self.transactions_tab = ttk.Frame(notebook)
+        self.reports_tab = ttk.Frame(notebook)
 
         notebook.add(self.accounts_tab, text="Comptes")
         notebook.add(self.categories_tab, text="Categories")
         notebook.add(self.budget_tab, text="Budget")
         notebook.add(self.transactions_tab, text="Transactions")
+        notebook.add(self.reports_tab, text="Rapports")
 
         self._build_accounts_tab()
         self._build_categories_tab()
         self._build_budget_tab()
         self._build_transactions_tab()
+        self._build_reports_tab()
 
         self._refresh_accounts()
         self._refresh_categories()
         self._refresh_budget()
         self._refresh_transactions()
+        self._refresh_reports()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -544,6 +548,55 @@ class EnveloppeApp:
         buttons.grid(row=5, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(buttons, text="Enregistrer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+
+    # -- onglet Rapports -------------------------------------------------------
+
+    def _build_reports_tab(self):
+        frame = self.reports_tab
+        top = ttk.Frame(frame)
+        top.pack(fill=X, padx=10, pady=10)
+
+        ttk.Label(top, text="Periode :").pack(side=LEFT)
+        self.reports_num_months_var = StringVar(value="6")
+        self.reports_period_combo = ttk.Combobox(
+            top, textvariable=self.reports_num_months_var, width=18, state="readonly",
+            values=["3 derniers mois", "6 derniers mois", "12 derniers mois"],
+        )
+        self.reports_period_combo.current(1)
+        self.reports_period_combo.pack(side=LEFT, padx=5)
+        self.reports_period_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_reports())
+        ttk.Button(top, text="Actualiser", command=self._refresh_reports).pack(side=LEFT, padx=10)
+
+        self.reports_tree = ttk.Treeview(frame, show="headings", height=18)
+        self.reports_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+
+        ttk.Label(
+            frame,
+            text="Depenses reelles par categorie et par mois (les remboursements et revenus ne sont pas comptes).",
+            foreground="#666",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+    def _reports_num_months(self) -> int:
+        return {0: 3, 1: 6, 2: 12}.get(self.reports_period_combo.current(), 6)
+
+    def _refresh_reports(self):
+        report = bg.spending_report(self.db, end_month=self.current_month, num_months=self._reports_num_months())
+        months = report["months"]
+
+        columns = ("category",) + tuple(months) + ("total",)
+        self.reports_tree["columns"] = columns
+        self.reports_tree.heading("category", text="Categorie")
+        self.reports_tree.column("category", width=180, anchor="w")
+        for month in months:
+            self.reports_tree.heading(month, text=bg.month_label(month))
+            self.reports_tree.column(month, width=100, anchor="e")
+        self.reports_tree.heading("total", text="Total")
+        self.reports_tree.column("total", width=110, anchor="e")
+
+        self.reports_tree.delete(*self.reports_tree.get_children())
+        for row in report["rows"]:
+            values = (row["name"],) + tuple(bg.format_amount(row["amounts"][m]) for m in months) + (bg.format_amount(row["total"]),)
+            self.reports_tree.insert("", END, values=values)
 
     # -- fermeture ------------------------------------------------------------
 

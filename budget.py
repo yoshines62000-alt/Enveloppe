@@ -92,5 +92,42 @@ def ready_to_assign(db, month: Optional[str] = None) -> float:
     return round(db.total_on_budget_balance() - total_in_envelopes, 2)
 
 
+def spending_report(db, end_month: Optional[str] = None, num_months: int = 6) -> dict:
+    """Rapport de depenses par categorie sur les `num_months` mois se
+    terminant a `end_month` inclus (par defaut le mois courant). Pour
+    chaque categorie, ne retient que les depenses reelles du mois (activite
+    negative) - un remboursement ou un revenu range dans une categorie ne
+    doit pas faire "baisser" ses depenses affichees. Les categories
+    archivees sont incluses (leur historique de depenses reste pertinent),
+    mais une categorie sans aucune depense sur la periode est omise."""
+    end_month = end_month or current_month()
+    months = []
+    month = end_month
+    for _ in range(num_months):
+        months.append(month)
+        month = shift_month(month, -1)
+    months.reverse()
+
+    rows = []
+    for category in db.list_categories(include_archived=True):
+        amounts = {}
+        total = 0.0
+        for month in months:
+            activity = category_activity_for_month(db, category["id"], month)
+            spent = round(-activity, 2) if activity < 0 else 0.0
+            amounts[month] = spent
+            total += spent
+        if total > 0:
+            rows.append({
+                "category_id": category["id"],
+                "name": category["name"],
+                "group_name": category["group_name"],
+                "amounts": amounts,
+                "total": round(total, 2),
+            })
+    rows.sort(key=lambda row: row["total"], reverse=True)
+    return {"months": months, "rows": rows}
+
+
 def format_amount(amount: float, currency: str = "EUR") -> str:
     return f"{amount:,.2f} {currency}".replace(",", " ")

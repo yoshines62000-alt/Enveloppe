@@ -157,5 +157,56 @@ class FormatAmountTestCase(unittest.TestCase):
         self.assertEqual(bg.format_amount(-42.0), "-42.00 EUR")
 
 
+class SpendingReportTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.account_id = self.db.add_account("Compte", starting_balance=1000.0)
+        self.groceries_id = self.db.add_category("Epicerie")
+        self.fun_id = self.db.add_category("Loisirs")
+
+    def test_report_covers_the_requested_number_of_months_ending_at_end_month(self):
+        report = bg.spending_report(self.db, end_month="2026-03", num_months=3)
+        self.assertEqual(report["months"], ["2026-01", "2026-02", "2026-03"])
+
+    def test_report_sums_spending_per_category_per_month(self):
+        self.db.add_transaction(self.account_id, "2026-01-05", -30.0, category_id=self.groceries_id)
+        self.db.add_transaction(self.account_id, "2026-01-20", -20.0, category_id=self.groceries_id)
+        self.db.add_transaction(self.account_id, "2026-02-10", -15.0, category_id=self.groceries_id)
+        report = bg.spending_report(self.db, end_month="2026-02", num_months=2)
+        row = next(r for r in report["rows"] if r["category_id"] == self.groceries_id)
+        self.assertEqual(row["amounts"], {"2026-01": 50.0, "2026-02": 15.0})
+        self.assertEqual(row["total"], 65.0)
+
+    def test_a_refund_does_not_turn_into_negative_spending(self):
+        # Un remboursement (montant positif) range dans une categorie ne
+        # doit jamais faire apparaitre une "depense negative" - au pire,
+        # aucune depense ce mois-la.
+        self.db.add_transaction(self.account_id, "2026-01-05", 40.0, category_id=self.groceries_id)
+        report = bg.spending_report(self.db, end_month="2026-01", num_months=1)
+        self.assertNotIn(self.groceries_id, [r["category_id"] for r in report["rows"]])
+
+    def test_a_category_with_no_spending_on_the_period_is_omitted(self):
+        report = bg.spending_report(self.db, end_month="2026-01", num_months=1)
+        self.assertEqual(report["rows"], [])
+
+    def test_rows_are_sorted_by_total_spending_descending(self):
+        self.db.add_transaction(self.account_id, "2026-01-05", -10.0, category_id=self.groceries_id)
+        self.db.add_transaction(self.account_id, "2026-01-06", -50.0, category_id=self.fun_id)
+        report = bg.spending_report(self.db, end_month="2026-01", num_months=1)
+        self.assertEqual([r["category_id"] for r in report["rows"]], [self.fun_id, self.groceries_id])
+
+    def test_an_archived_category_with_past_spending_still_appears(self):
+        self.db.add_transaction(self.account_id, "2026-01-05", -25.0, category_id=self.groceries_id)
+        self.db.update_category(self.groceries_id, archived=True)
+        report = bg.spending_report(self.db, end_month="2026-01", num_months=1)
+        self.assertEqual([r["category_id"] for r in report["rows"]], [self.groceries_id])
+
+    def test_defaults_to_the_current_month_when_end_month_is_omitted(self):
+        report = bg.spending_report(self.db, num_months=1)
+        self.assertEqual(report["months"], [bg.current_month()])
+
+
 if __name__ == "__main__":
     unittest.main()
