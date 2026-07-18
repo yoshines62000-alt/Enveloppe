@@ -57,24 +57,28 @@ class EnveloppeApp:
         self.budget_tab = ttk.Frame(notebook)
         self.transactions_tab = ttk.Frame(notebook)
         self.reports_tab = ttk.Frame(notebook)
+        self.annual_tab = ttk.Frame(notebook)
 
         notebook.add(self.accounts_tab, text="Comptes")
         notebook.add(self.categories_tab, text="Categories")
         notebook.add(self.budget_tab, text="Budget")
         notebook.add(self.transactions_tab, text="Transactions")
         notebook.add(self.reports_tab, text="Rapports")
+        notebook.add(self.annual_tab, text="Vue annuelle")
 
         self._build_accounts_tab()
         self._build_categories_tab()
         self._build_budget_tab()
         self._build_transactions_tab()
         self._build_reports_tab()
+        self._build_annual_tab()
 
         self._refresh_accounts()
         self._refresh_categories()
         self._refresh_budget()
         self._refresh_transactions()
         self._refresh_reports()
+        self._refresh_annual()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -641,6 +645,52 @@ class EnveloppeApp:
         for row in report["rows"]:
             values = (row["name"],) + tuple(bg.format_amount(row["amounts"][m]) for m in months) + (bg.format_amount(row["total"]),)
             self.reports_tree.insert("", END, values=values)
+
+    # -- onglet Vue annuelle ----------------------------------------------------
+
+    def _build_annual_tab(self):
+        frame = self.annual_tab
+        self.annual_year = int(self.current_month[:4])
+
+        top = ttk.Frame(frame)
+        top.pack(fill=X, padx=10, pady=10)
+        ttk.Button(top, text="< Annee precedente", command=lambda: self._change_annual_year(-1)).pack(side=LEFT)
+        self.annual_year_var = StringVar()
+        ttk.Label(top, textvariable=self.annual_year_var, font=("Segoe UI", 12, "bold")).pack(side=LEFT, padx=15)
+        ttk.Button(top, text="Annee suivante >", command=lambda: self._change_annual_year(1)).pack(side=LEFT)
+
+        self.annual_tree = ttk.Treeview(frame, show="headings", height=18)
+        self.annual_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+
+        ttk.Label(
+            frame, text="Montant assigne a chaque categorie, mois par mois, sur toute l'annee.",
+            foreground="#666",
+        ).pack(anchor="w", padx=10, pady=(0, 10))
+
+    def _change_annual_year(self, delta: int):
+        self.annual_year += delta
+        self._refresh_annual()
+
+    def _refresh_annual(self):
+        overview = bg.annual_budget_overview(self.db, self.annual_year)
+        months = overview["months"]
+        self.annual_year_var.set(str(self.annual_year))
+
+        short_labels = [bg.month_label(m).split(" ")[0][:3] for m in months]
+        columns = ("category",) + tuple(months) + ("total",)
+        self.annual_tree["columns"] = columns
+        self.annual_tree.heading("category", text="Categorie")
+        self.annual_tree.column("category", width=180, anchor="w")
+        for month, label in zip(months, short_labels):
+            self.annual_tree.heading(month, text=label)
+            self.annual_tree.column(month, width=80, anchor="e")
+        self.annual_tree.heading("total", text="Total")
+        self.annual_tree.column("total", width=110, anchor="e")
+
+        self.annual_tree.delete(*self.annual_tree.get_children())
+        for row in overview["rows"]:
+            values = (row["name"],) + tuple(bg.format_amount(row["amounts"][m]) for m in months) + (bg.format_amount(row["total"]),)
+            self.annual_tree.insert("", END, values=values)
 
     # -- fermeture ------------------------------------------------------------
 

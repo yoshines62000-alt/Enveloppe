@@ -208,5 +208,46 @@ class SpendingReportTestCase(unittest.TestCase):
         self.assertEqual(report["months"], [bg.current_month()])
 
 
+class AnnualBudgetOverviewTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.groceries_id = self.db.add_category("Epicerie")
+        self.fun_id = self.db.add_category("Loisirs")
+
+    def test_overview_covers_all_12_months_of_the_given_year(self):
+        self.db.set_budget_entry(self.groceries_id, "2026-01", 100.0)
+        overview = bg.annual_budget_overview(self.db, 2026)
+        self.assertEqual(overview["months"], [f"2026-{m:02d}" for m in range(1, 13)])
+
+    def test_a_category_never_assigned_all_year_is_omitted(self):
+        overview = bg.annual_budget_overview(self.db, 2026)
+        self.assertEqual(overview["rows"], [])
+
+    def test_total_sums_the_12_monthly_assignments(self):
+        self.db.set_budget_entry(self.groceries_id, "2026-01", 100.0)
+        self.db.set_budget_entry(self.groceries_id, "2026-06", 150.0)
+        overview = bg.annual_budget_overview(self.db, 2026)
+        row = next(r for r in overview["rows"] if r["category_id"] == self.groceries_id)
+        self.assertEqual(row["amounts"]["2026-01"], 100.0)
+        self.assertEqual(row["amounts"]["2026-06"], 150.0)
+        self.assertEqual(row["amounts"]["2026-03"], 0.0)
+        self.assertEqual(row["total"], 250.0)
+
+    def test_assignments_from_a_different_year_do_not_leak_into_the_overview(self):
+        self.db.set_budget_entry(self.groceries_id, "2025-06", 999.0)
+        overview = bg.annual_budget_overview(self.db, 2026)
+        self.assertEqual(overview["rows"], [])
+
+    def test_rows_are_sorted_by_group_then_by_name(self):
+        self.db.update_category(self.groceries_id, group_name="Vie quotidienne")
+        self.db.update_category(self.fun_id, group_name="Extras")
+        self.db.set_budget_entry(self.groceries_id, "2026-01", 100.0)
+        self.db.set_budget_entry(self.fun_id, "2026-01", 50.0)
+        overview = bg.annual_budget_overview(self.db, 2026)
+        self.assertEqual([r["category_id"] for r in overview["rows"]], [self.fun_id, self.groceries_id])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -129,5 +129,26 @@ def spending_report(db, end_month: Optional[str] = None, num_months: int = 6) ->
     return {"months": months, "rows": rows}
 
 
+def annual_budget_overview(db, year: int) -> dict:
+    """Vue annuelle : montant assigne a chaque categorie pour chacun des 12
+    mois de `year`. Contrairement a spending_report (qui ne montre que les
+    depenses reelles), ceci montre le PLAN budgetaire tel que saisi dans
+    l'onglet Budget - utile pour reperer d'un coup d'oeil les mois sans
+    aucune assignation avant qu'ils n'arrivent. Une categorie jamais
+    assignee de toute l'annee est omise."""
+    months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
+    rows = []
+    for category in db.list_categories(include_archived=True):
+        amounts = {month: db.get_budget_entry(category["id"], month) for month in months}
+        if not any(amounts.values()):
+            continue
+        rows.append({
+            "category_id": category["id"], "name": category["name"], "group_name": category["group_name"],
+            "amounts": amounts, "total": round(sum(amounts.values()), 2),
+        })
+    rows.sort(key=lambda row: (row["group_name"], row["name"]))
+    return {"year": year, "months": months, "rows": rows}
+
+
 def format_amount(amount: float, currency: str = "EUR") -> str:
     return f"{amount:,.2f} {currency}".replace(",", " ")
