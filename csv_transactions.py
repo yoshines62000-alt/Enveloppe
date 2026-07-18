@@ -34,7 +34,13 @@ def export_transactions_csv(transactions: list, output_path: Path) -> None:
             ])
 
 
-def import_transactions_csv(db, input_path: Path, default_account_id: Optional[int] = None) -> dict:
+def _duplicate_key(account_id: int, date: str, amount: float, payee: str) -> tuple:
+    return (account_id, date, round(amount, 2), payee.strip().lower())
+
+
+def import_transactions_csv(
+    db, input_path: Path, default_account_id: Optional[int] = None, skip_duplicates: bool = True,
+) -> dict:
     """Importe des transactions depuis un CSV au meme format que celui
     genere par export_transactions_csv (colonne ID ignoree - une nouvelle
     ligne est toujours creee, jamais une mise a jour). Une ligne dont le
@@ -43,7 +49,14 @@ def import_transactions_csv(db, input_path: Path, default_account_id: Optional[i
     ne correspond au nom indique, `default_account_id` sert de repli quand
     fourni. Une categorie inconnue ou vide laisse la transaction non
     categorisee plutot que d'echouer, puisque une transaction sans
-    categorie est deja un cas normal (ex : revenu)."""
+    categorie est deja un cas normal (ex : revenu).
+
+    Par defaut (skip_duplicates=True), une ligne dont le compte, la date, le
+    montant et le beneficiaire correspondent exactement a une transaction
+    deja presente est ignoree plutot qu'importee - sans cela, reimporter par
+    erreur deux fois le meme fichier (ou un export qui chevauche un import
+    precedent) doublerait silencieusement chaque transaction concernee,
+    faussant d'autant les soldes de comptes et le reste a assigner."""
     input_path = Path(input_path)
     with open(input_path, "r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -55,9 +68,15 @@ def import_transactions_csv(db, input_path: Path, default_account_id: Optional[i
 
     accounts_by_name = {a["name"].strip().lower(): a["id"] for a in db.list_accounts(include_archived=True)}
     categories_by_name = {c["name"].strip().lower(): c["id"] for c in db.list_categories(include_archived=True)}
+    existing_keys = set()
+    if skip_duplicates:
+        existing_keys = {
+            _duplicate_key(tx["account_id"], tx["date"], tx["amount"], tx["payee"]) for tx in db.list_transactions()
+        }
 
     imported = 0
     skipped = []
+    duplicates = []
     for line_number, row in enumerate(rows, start=2):  # ligne 1 = entete
         account_name = (row.get("Compte") or "").strip().lower()
         account_id = accounts_by_name.get(account_name, default_account_id)
@@ -74,17 +93,29 @@ def import_transactions_csv(db, input_path: Path, default_account_id: Optional[i
             skipped.append({"line": line_number, "reason": f"montant invalide : '{row.get('Montant', '')}'"})
             continue
 
+        date = row.get("Date", "")
+        payee = row.get("Beneficiaire", "")
+
+        if skip_duplicates:
+            key = _duplicate_key(account_id, date, amount, payee)
+            if key in existing_keys:
+                duplicates.append({
+                    "line": line_number,
+                    "reason": "transaction identique deja presente (meme compte/date/montant/beneficiaire)",
+                })
+                continue
+            existing_keys.add(key)  # ecarte aussi les doublons internes au fichier importe lui-meme
+
         cleared_text = (row.get("Pointee") or "").strip().lower()
         cleared = cleared_text in ("oui", "yes", "true", "1")
 
         try:
             db.add_transaction(
-                account_id, row.get("Date", ""), amount,
-                category_id=category_id, payee=row.get("Beneficiaire", ""), memo=row.get("Memo", ""),
-                cleared=cleared,
+                account_id, date, amount, category_id=category_id, payee=payee,
+                memo=row.get("Memo", ""), cleared=cleared,
             )
             imported += 1
         except ValueError as exc:
             skipped.append({"line": line_number, "reason": str(exc)})
 
-    return {"imported": imported, "skipped": skipped}
+    return {"imported": imported, "skipped": skipped, "duplicates": duplicates}

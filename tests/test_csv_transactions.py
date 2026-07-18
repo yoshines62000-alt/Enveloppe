@@ -139,6 +139,50 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         with self.assertRaises(CsvImportError):
             import_transactions_csv(self.db, path)
 
+    def test_reimporting_the_same_csv_a_second_time_skips_every_row_as_a_duplicate(self):
+        # Trouve a l'audit : sans detection de doublon, reimporter par
+        # erreur deux fois le meme fichier doublait silencieusement chaque
+        # transaction (et donc les soldes de comptes).
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "Epicerie", "Supermarche", "", "-30.00", "Non"],
+        ])
+        first = import_transactions_csv(self.db, path)
+        self.assertEqual(first["imported"], 1)
+        self.assertEqual(first["duplicates"], [])
+
+        second = import_transactions_csv(self.db, path)
+        self.assertEqual(second["imported"], 0)
+        self.assertEqual(len(second["duplicates"]), 1)
+        self.assertEqual(len(self.db.list_transactions()), 1)
+
+    def test_duplicate_rows_within_the_same_file_are_only_imported_once(self):
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-30.00", "Non"],
+            ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-30.00", "Non"],
+        ])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(len(result["duplicates"]), 1)
+        self.assertEqual(len(self.db.list_transactions()), 1)
+
+    def test_a_transaction_with_a_different_amount_is_not_treated_as_a_duplicate(self):
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-30.00", "Non"],
+            ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-31.00", "Non"],
+        ])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual(result["duplicates"], [])
+
+    def test_skip_duplicates_false_disables_duplicate_detection(self):
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-30.00", "Non"],
+        ])
+        import_transactions_csv(self.db, path)
+        result = import_transactions_csv(self.db, path, skip_duplicates=False)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(len(self.db.list_transactions()), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

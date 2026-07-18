@@ -537,6 +537,8 @@ class EnveloppeApp:
         self._refresh_accounts()
         self._refresh_budget()
         message = f"{result['imported']} transaction(s) importee(s)."
+        if result["duplicates"]:
+            message += f"\n{len(result['duplicates'])} doublon(s) ignore(s) (deja present(s))."
         if result["skipped"]:
             message += f"\n{len(result['skipped'])} ligne(s) ignoree(s) :\n"
             message += "\n".join(f"  ligne {s['line']} : {s['reason']}" for s in result["skipped"][:10])
