@@ -5,17 +5,22 @@ machine de l'utilisateur."""
 
 from __future__ import annotations
 
+import queue
 import sys
 import webbrowser
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
 
 import budget as bg
+import update_checker
 from csv_transactions import CsvImportError, export_transactions_csv, import_transactions_csv
 from db import Database
 
 APP_TITLE = "Enveloppe"
 DONATE_URL = "https://ko-fi.com/yoshines62000"
+APP_VERSION = "1.0.6"
+UPDATE_REPO = "yoshines62000-alt/Enveloppe"
+RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 
 
 def _resource_path(relative: str) -> Path:
@@ -45,9 +50,17 @@ class EnveloppeApp:
 
         bottom_bar = ttk.Frame(self.root)
         bottom_bar.pack(fill=X, side="bottom")
+        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side=LEFT, padx=(8, 0), pady=4)
+        self.update_status_var = StringVar(value="")
+        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
+        self.update_status_label.pack(side=LEFT, padx=(6, 0), pady=4)
         donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
         donate_label.pack(side=RIGHT, padx=8, pady=4)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
+
+        self._update_check_queue = queue.Queue()
+        update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
+        self.root.after(500, self._poll_update_check)
 
         # Banniere de depassement : placee HORS du notebook (au-dessus), pour
         # rester visible des l'ouverture de l'app quel que soit l'onglet
@@ -108,6 +121,22 @@ class EnveloppeApp:
         # d'appel direct dans __init__) pour laisser la fenetre principale
         # s'afficher d'abord.
         self.root.after(200, self._auto_generate_recurring)
+
+    def _poll_update_check(self):
+        try:
+            status, tag = self._update_check_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(500, self._poll_update_check)
+            return
+        if status == "update_available":
+            self.update_status_var.set(f"Mise a jour disponible : {tag} - Telecharger")
+            self.update_status_label.configure(foreground="#0645AD", cursor="hand2")
+            self.update_status_label.bind("<Button-1>", lambda event: webbrowser.open(RELEASES_URL))
+        elif status == "up_to_date":
+            self.update_status_var.set("A jour")
+            self.update_status_label.configure(foreground="#1B7A1B", cursor="")
+        # "check_failed" (hors ligne, GitHub inaccessible...) : on ne
+        # revendique rien plutot que d'afficher a tort "a jour".
 
     # -- utilitaires communs --------------------------------------------------
 
