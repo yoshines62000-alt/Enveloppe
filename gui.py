@@ -134,11 +134,12 @@ class EnveloppeApp:
         ttk.Entry(form, textvariable=self.account_balance_var, width=12).grid(row=0, column=5, padx=5)
         ttk.Button(form, text="Ajouter le compte", command=self._add_account).grid(row=0, column=6, padx=5)
 
-        columns = ("id", "name", "type", "balance", "archived")
+        columns = ("id", "name", "type", "balance", "cleared_balance", "archived")
         self.accounts_tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
         for col, label, width in [
             ("id", "ID", 40), ("name", "Nom", 200), ("type", "Type", 140),
-            ("balance", "Solde actuel", 120), ("archived", "Archive", 70),
+            ("balance", "Solde actuel", 120), ("cleared_balance", "Solde pointe", 120),
+            ("archived", "Archive", 70),
         ]:
             self.accounts_tree.heading(col, text=label)
             self.accounts_tree.column(col, width=width, anchor="w")
@@ -172,6 +173,7 @@ class EnveloppeApp:
             self.accounts_tree.insert("", END, iid=str(account["id"]), values=(
                 account["id"], account["name"], account["type"],
                 bg.format_amount(self.db.account_balance(account["id"])),
+                bg.format_amount(self.db.account_cleared_balance(account["id"])),
                 "Oui" if account["archived"] else "Non",
             ))
         self._refresh_transaction_account_choices()
@@ -509,11 +511,12 @@ class EnveloppeApp:
         self.tx_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_transactions())
         ttk.Button(filter_frame, text="Tous les comptes", command=self._clear_transaction_filter).pack(side=LEFT, padx=5)
 
-        columns = ("id", "date", "account", "payee", "category", "amount")
+        columns = ("id", "date", "account", "payee", "category", "amount", "cleared")
         self.transactions_tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
         for col, label, width in [
             ("id", "ID", 40), ("date", "Date", 100), ("account", "Compte", 140),
             ("payee", "Beneficiaire", 180), ("category", "Categorie", 140), ("amount", "Montant", 100),
+            ("cleared", "Pointee", 70),
         ]:
             self.transactions_tree.heading(col, text=label)
             self.transactions_tree.column(col, width=width, anchor="w")
@@ -528,6 +531,7 @@ class EnveloppeApp:
         ttk.Button(actions, text="Exporter en CSV...", command=self._export_transactions_csv).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Virement entre comptes...", command=self._open_transfer_dialog).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Fractionner...", command=self._open_split_dialog).pack(side=RIGHT, padx=(0, 5))
+        ttk.Button(actions, text="Pointer / depointer", command=self._toggle_transaction_cleared).pack(side=RIGHT, padx=(0, 5))
 
     def _open_split_dialog(self):
         selection = self.transactions_tree.selection()
@@ -737,7 +741,21 @@ class EnveloppeApp:
             self.transactions_tree.insert("", END, iid=str(tx["id"]), values=(
                 tx["id"], tx["date"], tx["account_name"], tx["payee"],
                 category_label, bg.format_amount(tx["amount"]),
+                "Oui" if tx["cleared"] else "-",
             ))
+
+    def _toggle_transaction_cleared(self):
+        selection = self.transactions_tree.selection()
+        if not selection:
+            messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
+            return
+        transaction_id = int(selection[0])
+        tx = self.db.get_transaction(transaction_id)
+        if tx is None:
+            return
+        self.db.update_transaction(transaction_id, cleared=0 if tx["cleared"] else 1)
+        self._refresh_transactions()
+        self._refresh_accounts()
 
     def _delete_transaction(self):
         selection = self.transactions_tree.selection()

@@ -163,6 +163,20 @@ class Database:
         ).fetchone()
         return round(account["starting_balance"] + row[0], 2)
 
+    def account_cleared_balance(self, account_id: int) -> float:
+        """Solde pointe du compte : ne compte que les transactions marquees
+        `cleared` (rapprochees avec le releve bancaire). Meme structure que
+        account_balance, avec le filtre `cleared = 1` en plus - permet de
+        verifier que le solde de l'application colle a la realite bancaire
+        sans attendre que TOUT soit pointe."""
+        account = self.get_account(account_id)
+        if account is None:
+            return 0.0
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND cleared = 1", (account_id,)
+        ).fetchone()
+        return round(account["starting_balance"] + row[0], 2)
+
     def total_on_budget_balance(self) -> float:
         # Inclut les comptes archives : "archiver" ne fait que les masquer
         # des listes deroulantes de saisie, jamais disparaitre l'argent

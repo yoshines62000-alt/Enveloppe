@@ -29,6 +29,39 @@ class DatabaseTestCase(unittest.TestCase):
         self.db.add_transaction(account_id, "2026-01-10", 200.0, payee="Salaire")
         self.assertEqual(self.db.account_balance(account_id), 1150.0)
 
+    def test_account_cleared_balance_only_counts_cleared_transactions(self):
+        account_id = self.db.add_account("Compte courant", starting_balance=1000.0)
+        self.db.add_transaction(account_id, "2026-01-05", -50.0, payee="Epicerie", cleared=True)
+        self.db.add_transaction(account_id, "2026-01-10", 200.0, payee="Salaire", cleared=False)
+        self.assertEqual(self.db.account_cleared_balance(account_id), 950.0)
+        self.assertEqual(self.db.account_balance(account_id), 1150.0)  # solde total, lui, inclut tout
+
+    def test_account_cleared_balance_equals_starting_balance_when_nothing_is_cleared(self):
+        account_id = self.db.add_account("Compte courant", starting_balance=500.0)
+        self.db.add_transaction(account_id, "2026-01-05", -50.0, cleared=False)
+        self.assertEqual(self.db.account_cleared_balance(account_id), 500.0)
+
+    def test_toggling_cleared_via_update_transaction_preserves_existing_splits(self):
+        account_id = self.db.add_account("Compte courant")
+        groceries = self.db.add_category("Epicerie")
+        household = self.db.add_category("Maison")
+        tx_id = self.db.add_transaction(account_id, "2026-01-05", -100.0)
+        self.db.set_transaction_splits(tx_id, [
+            {"category_id": groceries, "amount": -60.0},
+            {"category_id": household, "amount": -40.0},
+        ])
+        self.db.update_transaction(tx_id, cleared=1)
+        self.assertEqual(len(self.db.get_transaction_splits(tx_id)), 2)
+        self.assertTrue(self.db.get_transaction(tx_id)["cleared"])
+
+    def test_each_leg_of_a_transfer_can_be_pointed_independently(self):
+        account_a = self.db.add_account("A")
+        account_b = self.db.add_account("B")
+        out_id, in_id = self.db.add_transfer(account_a, account_b, "2026-01-05", 100.0)
+        self.db.update_transaction(out_id, cleared=1)
+        self.assertTrue(self.db.get_transaction(out_id)["cleared"])
+        self.assertFalse(self.db.get_transaction(in_id)["cleared"])
+
     def test_list_accounts_excludes_archived_by_default(self):
         active = self.db.add_account("Actif")
         archived = self.db.add_account("Archive")
