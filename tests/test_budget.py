@@ -197,6 +197,50 @@ class MoveBetweenEnvelopesTestCase(unittest.TestCase):
         self.assertEqual(bg.category_available(self.db, self.groceries_id, "2026-01"), -200.0)
         self.assertEqual(bg.category_available(self.db, self.fun_id, "2026-01"), 600.0)
 
+    def test_move_rejects_an_infinite_amount(self):
+        # Regression trouvee a l'audit : float("inf") passe le garde-fou
+        # "amount > 0" (inf > 0 est vrai) et corrompait ready_to_assign en
+        # NaN, un etat non affichable et non recuperable sans edition
+        # manuelle de la base.
+        with self.assertRaises(ValueError):
+            bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", float("inf"))
+        with self.assertRaises(ValueError):
+            bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", float("nan"))
+        # Aucun etat corrompu apres le rejet.
+        self.assertEqual(self.db.get_budget_entry(self.groceries_id, "2026-01"), 300.0)
+
+    def test_move_commits_both_writes_exactly_once(self):
+        # Regression trouvee a l'audit : deux appels separes a
+        # set_budget_entry (chacun committant independamment via deux
+        # transactions SQLite distinctes) laissaient un etat durablement
+        # incoherent si le processus etait interrompu entre les deux -
+        # reproduit et confirme par l'agent d'audit (un solde fantome
+        # survivait a la fermeture/reouverture de la base). Verifie ici
+        # directement le mecanisme du correctif : move_budget_entries ne
+        # doit appeler conn.commit() qu'UNE seule fois pour les deux
+        # ecritures, jamais deux. sqlite3.Connection est un type C immuable
+        # (ni patch.object ni assignation d'attribut d'instance ne
+        # fonctionnent dessus) : on remplace donc self.db.conn par un fin
+        # wrapper qui delegue tout sauf commit(), qu'il compte.
+        class _CommitCounter:
+            def __init__(self, real_conn):
+                self._real_conn = real_conn
+                self.commit_calls = 0
+
+            def commit(self):
+                self.commit_calls += 1
+                return self._real_conn.commit()
+
+            def __getattr__(self, name):
+                return getattr(self._real_conn, name)
+
+        counter = _CommitCounter(self.db.conn)
+        self.db.conn = counter
+        self.db.move_budget_entries(self.groceries_id, self.fun_id, "2026-01", 50.0)
+        self.assertEqual(counter.commit_calls, 1)
+        self.assertEqual(self.db.get_budget_entry(self.groceries_id, "2026-01"), 250.0)
+        self.assertEqual(self.db.get_budget_entry(self.fun_id, "2026-01"), 150.0)
+
 
 class FormatAmountTestCase(unittest.TestCase):
     def test_format_amount_uses_currency_code_and_space_separator(self):

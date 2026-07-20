@@ -749,11 +749,17 @@ class EnveloppeApp:
         if not selection:
             messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
             return
-        transaction_id = int(selection[0])
-        tx = self.db.get_transaction(transaction_id)
-        if tx is None:
-            return
-        self.db.update_transaction(transaction_id, cleared=0 if tx["cleared"] else 1)
+        # Bascule CHAQUE ligne selectionnee individuellement (pas seulement
+        # la premiere) : un utilisateur qui multi-selectionne plusieurs
+        # transactions pour un rapprochement bancaire s'attend a toutes les
+        # voir pointees d'un coup, pas seulement la premiere de la selection
+        # (bug trouve a l'audit).
+        for iid in selection:
+            transaction_id = int(iid)
+            tx = self.db.get_transaction(transaction_id)
+            if tx is None:
+                continue
+            self.db.update_transaction(transaction_id, cleared=0 if tx["cleared"] else 1)
         self._refresh_transactions()
         self._refresh_accounts()
 

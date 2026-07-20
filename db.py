@@ -216,13 +216,33 @@ class Database:
 
     # -- budget (assignations mensuelles) -----------------------------------------
 
-    def set_budget_entry(self, category_id: int, month: str, assigned: float) -> None:
+    def _set_budget_entry_no_commit(self, category_id: int, month: str, assigned: float) -> None:
         _validate_month(month)
         self.conn.execute(
             """INSERT INTO budget_entries (category_id, month, assigned) VALUES (?, ?, ?)
                ON CONFLICT(category_id, month) DO UPDATE SET assigned = excluded.assigned""",
             (category_id, month, assigned),
         )
+
+    def set_budget_entry(self, category_id: int, month: str, assigned: float) -> None:
+        self._set_budget_entry_no_commit(category_id, month, assigned)
+        self.conn.commit()
+
+    def move_budget_entries(self, from_category_id: int, to_category_id: int, month: str, amount: float) -> None:
+        """Deplace `amount` du budget assigne de `from_category_id` vers
+        `to_category_id` pour `month`, en UNE SEULE transaction SQLite (un
+        seul commit final) - contrairement a deux appels separes a
+        set_budget_entry (qui commit chacun independamment), ce qui
+        laisserait le reste-a-assigner durablement fausse si le processus
+        est interrompu entre les deux ecritures (bug trouve a l'audit :
+        confirme reproductible, la corruption survit a la fermeture/
+        reouverture de la base). Meme motif que set_transaction_splits, qui
+        committe deja ses DELETE/INSERT multiples en un seul bloc pour la
+        meme raison."""
+        current_from = self.get_budget_entry(from_category_id, month)
+        current_to = self.get_budget_entry(to_category_id, month)
+        self._set_budget_entry_no_commit(from_category_id, month, round(current_from - amount, 2))
+        self._set_budget_entry_no_commit(to_category_id, month, round(current_to + amount, 2))
         self.conn.commit()
 
     def get_budget_entry(self, category_id: int, month: str) -> float:

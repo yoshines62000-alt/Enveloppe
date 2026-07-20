@@ -14,6 +14,7 @@ qu'il n'est pas comble par une nouvelle assignation.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
 from typing import Optional
@@ -99,15 +100,18 @@ def move_between_envelopes(db, from_category_id: int, to_category_id: int, month
     ne bouge jamais (voir ready_to_assign) : deplacer de l'argent entre
     enveloppes n'en cree ni n'en detruit. Deplacer plus que le disponible de
     la source est volontairement permis - son solde devient negatif
-    (comportement YNAB standard), charge a l'utilisateur de le combler."""
-    if amount <= 0:
-        raise ValueError("Le montant a deplacer doit etre superieur a zero.")
+    (comportement YNAB standard), charge a l'utilisateur de le combler.
+
+    Les deux ecritures passent par db.move_budget_entries (UN SEUL commit) :
+    deux appels separes a set_budget_entry (chacun committant
+    independamment) laisseraient un solde fantome durable si le processus
+    est interrompu entre les deux (bug trouve a l'audit, corruption
+    confirmee survivre a la fermeture/reouverture de la base)."""
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError("Le montant a deplacer doit etre un nombre fini superieur a zero.")
     if from_category_id == to_category_id:
         raise ValueError("La categorie source et la categorie destination doivent etre differentes.")
-    from_assigned = db.get_budget_entry(from_category_id, month)
-    to_assigned = db.get_budget_entry(to_category_id, month)
-    db.set_budget_entry(from_category_id, month, round(from_assigned - amount, 2))
-    db.set_budget_entry(to_category_id, month, round(to_assigned + amount, 2))
+    db.move_budget_entries(from_category_id, to_category_id, month, amount)
 
 
 def spending_report(db, end_month: Optional[str] = None, num_months: int = 6) -> dict:
