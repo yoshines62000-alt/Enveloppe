@@ -122,6 +122,96 @@ class DatabaseTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.update_transaction(transaction_id, date="not-a-date")
 
+    def test_add_transaction_rejects_calendar_invalid_dates(self):
+        # Trouve a l'audit : le regex de format seul acceptait "2026-02-30"
+        # (jour 01-31, sans verifier la longueur reelle du mois) et l'aurait
+        # insere silencieusement, sans aucune exception - notamment via
+        # import_transactions_csv, qui ne pre-valide pas la date avant de
+        # l'envoyer a add_transaction (contrairement a la GUI).
+        account_id = self.db.add_account("A")
+        for invalid_date in ("2026-02-30", "2026-04-31", "2025-02-29", "2026-06-31", "2026-11-31"):
+            with self.subTest(date=invalid_date):
+                with self.assertRaises(ValueError):
+                    self.db.add_transaction(account_id, invalid_date, -10.0)
+        self.assertEqual(self.db.list_transactions(), [])  # aucune insertion silencieuse
+
+    def test_add_transaction_accepts_a_leap_day_on_a_leap_year(self):
+        account_id = self.db.add_account("A")
+        transaction_id = self.db.add_transaction(account_id, "2028-02-29", -10.0)
+        self.assertIsNotNone(self.db.get_transaction(transaction_id))
+
+    def test_update_transaction_rejects_calendar_invalid_date(self):
+        account_id = self.db.add_account("A")
+        transaction_id = self.db.add_transaction(account_id, "2026-01-05", -10.0)
+        with self.assertRaises(ValueError):
+            self.db.update_transaction(transaction_id, date="2026-02-30")
+        # La date d'origine, valide, n'a pas ete alteree par la tentative.
+        self.assertEqual(self.db.get_transaction(transaction_id)["date"], "2026-01-05")
+
+    def test_add_recurring_transaction_rejects_calendar_invalid_first_due_date(self):
+        account_id = self.db.add_account("A")
+        with self.assertRaises(ValueError):
+            self.db.add_recurring_transaction(account_id, "2026-02-30", -800.0, "monthly")
+
+    # -- backup_to (item 4 : sauvegarde/restauration) ------------------------
+
+    def test_backup_to_creates_a_readable_copy_with_the_same_data(self):
+        account_id = self.db.add_account("Compte", starting_balance=500.0)
+        self.db.add_transaction(account_id, "2026-01-05", -20.0, payee="Test")
+        dest = self.tmp / "copie.sqlite"
+        self.db.backup_to(dest)
+        self.assertTrue(dest.exists())
+
+        copy = Database(dest)
+        try:
+            self.assertEqual(len(copy.list_accounts()), 1)
+            self.assertEqual(copy.account_balance(account_id), 480.0)
+        finally:
+            copy.close()
+
+    def test_backup_to_does_not_lock_or_alter_the_source_database(self):
+        account_id = self.db.add_account("Compte", starting_balance=100.0)
+        dest = self.tmp / "copie.sqlite"
+        self.db.backup_to(dest)
+        # La connexion source doit rester pleinement utilisable apres coup.
+        self.db.add_transaction(account_id, "2026-01-05", -5.0)
+        self.assertEqual(self.db.account_balance(account_id), 95.0)
+
+    def test_backup_to_rejects_writing_over_the_active_database_file_itself(self):
+        with self.assertRaises(ValueError):
+            self.db.backup_to(self.db.path)
+
+    def test_backup_to_rejects_a_resolved_alias_of_the_active_database_file(self):
+        alias = self.db.path.parent / ".." / self.db.path.parent.name / self.db.path.name
+        with self.assertRaises(ValueError):
+            self.db.backup_to(alias)
+
+    def test_backup_to_rejects_a_hard_link_to_the_active_database_file(self):
+        # Un lien physique (hard link) vers le meme fichier n'est pas
+        # detecte par la comparaison de chemins RESOLUS (resolve()) puisque
+        # ce n'est pas un point de reparse a suivre - seul os.path.samefile
+        # (identite de fichier) l'attrape. Sans cette deuxieme verification,
+        # sqlite3 tenterait d'ouvrir une seconde connexion vers le fichier
+        # deja ouvert par self.conn et resterait bloque indefiniment.
+        import os
+        hard_link = self.tmp / "lien.sqlite"
+        try:
+            os.link(self.db.path, hard_link)
+        except OSError:
+            self.skipTest("le systeme de fichiers ne supporte pas les liens physiques ici")
+        with self.assertRaises(ValueError):
+            self.db.backup_to(hard_link)
+
+    def test_backup_to_a_brand_new_destination_path_succeeds(self):
+        dest = self.tmp / "sous_dossier_absent" / "copie.sqlite"
+        # Le dossier n'existe pas encore : sqlite3.connect() le cree-t-il ?
+        # Non - mais le test verifie ici seulement le cas nominal (dossier
+        # deja existant), le cas dossier absent est couvert cote GUI
+        # (test_backup_button_shows_an_error_instead_of_crashing_...).
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self.db.backup_to(dest)
+        self.assertTrue(dest.exists())
+
     def test_total_on_budget_balance_includes_archived_accounts(self):
         # "Archiver" ne fait que masquer un compte des listes de saisie ; son
         # argent reste reel et doit continuer a compter dans le total,
@@ -178,6 +268,63 @@ class DatabaseTestCase(unittest.TestCase):
         self.db.add_transaction(account_id, "2026-01-05", -20.0, category_id=cat)
         self.db.add_transaction(account_id, "2026-02-05", -30.0, category_id=cat)
         self.assertEqual(self.db.sum_transactions_for_month(cat, "2026-02"), -30.0)
+
+    # -- filtres de date sargables (item 5 : substr() -> comparaison directe) --
+    # sum_transactions_up_to/sum_transactions_for_month/list_transactions(up_to_month)
+    # comparaient auparavant substr(date,1,7) a un mois ; ils comparent
+    # maintenant `date` directement a des bornes de mois (voir
+    # db._month_range_bounds), pour exploiter idx_transactions_category_date.
+    # Ces tests verrouillent l'equivalence stricte de comportement, en
+    # particulier aux bornes ou une regression de calcul de bornes se
+    # verrait immediatement (changement d'annee, mois a 2 chiffres).
+
+    def test_sum_transactions_up_to_excludes_the_first_day_of_the_following_month(self):
+        account_id = self.db.add_account("A")
+        cat = self.db.add_category("Epicerie")
+        self.db.add_transaction(account_id, "2026-01-31", -20.0, category_id=cat)
+        self.db.add_transaction(account_id, "2026-02-01", -30.0, category_id=cat)
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2026-01"), -20.0)
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2026-02"), -50.0)
+
+    def test_sum_transactions_up_to_handles_the_december_to_january_year_rollover(self):
+        account_id = self.db.add_account("A")
+        cat = self.db.add_category("Epicerie")
+        self.db.add_transaction(account_id, "2025-12-31", -20.0, category_id=cat)
+        self.db.add_transaction(account_id, "2026-01-01", -30.0, category_id=cat)
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2025-12"), -20.0)
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2026-01"), -50.0)
+
+    def test_sum_transactions_for_month_excludes_neighboring_months_at_the_year_rollover(self):
+        account_id = self.db.add_account("A")
+        cat = self.db.add_category("Epicerie")
+        self.db.add_transaction(account_id, "2025-12-31", -20.0, category_id=cat)
+        self.db.add_transaction(account_id, "2026-01-01", -30.0, category_id=cat)
+        self.db.add_transaction(account_id, "2026-01-31", -5.0, category_id=cat)
+        self.assertEqual(self.db.sum_transactions_for_month(cat, "2025-12"), -20.0)
+        self.assertEqual(self.db.sum_transactions_for_month(cat, "2026-01"), -35.0)
+
+    def test_list_transactions_up_to_month_excludes_the_following_month(self):
+        account_id = self.db.add_account("A")
+        self.db.add_transaction(account_id, "2026-01-31", -20.0)
+        self.db.add_transaction(account_id, "2026-02-01", -30.0)
+        self.assertEqual(len(self.db.list_transactions(up_to_month="2026-01")), 1)
+        self.assertEqual(len(self.db.list_transactions(up_to_month="2026-02")), 2)
+
+    def test_sum_transactions_up_to_still_sums_split_amounts_at_month_boundaries(self):
+        account_id = self.db.add_account("A")
+        cat = self.db.add_category("Epicerie")
+        other = self.db.add_category("Maison")
+        tx_id = self.db.add_transaction(account_id, "2026-01-31", -100.0, category_id=cat)
+        self.db.set_transaction_splits(tx_id, [
+            {"category_id": cat, "amount": -60.0},
+            {"category_id": other, "amount": -40.0},
+        ])
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2026-01"), -60.0)
+        self.assertEqual(self.db.sum_transactions_up_to(cat, "2025-12"), 0.0)
+
+    def test_idx_transactions_category_date_index_exists(self):
+        indexes = {row["name"] for row in self.db.conn.execute("PRAGMA index_list(transactions)")}
+        self.assertIn("idx_transactions_category_date", indexes)
 
     def test_update_and_delete_transaction(self):
         account_id = self.db.add_account("A")

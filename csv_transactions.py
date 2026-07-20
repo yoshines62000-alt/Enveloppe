@@ -17,9 +17,36 @@ class CsvImportError(Exception):
     import_transactions_csv), qui sont simplement ignorees et rapportees."""
 
 
-def export_transactions_csv(transactions: list, output_path: Path) -> None:
+def _category_cell(db, tx) -> str:
+    """Texte de la colonne "Categorie" pour une transaction. Une transaction
+    fractionnee a category_id = NULL par design (voir
+    Database.set_transaction_splits : son montant est represente uniquement
+    par ses lignes de transaction_splits) - ecrire tx["category_name"] tel
+    quel produirait donc une colonne VIDE, sans aucune indication qu'il
+    s'agissait d'un fractionnement : perte de donnee silencieuse a l'export
+    (bug trouve a l'audit ; l'IHM, elle, affiche deja "Fractionnee (N)" dans
+    ce cas - voir gui.py, _refresh_transactions). Si `db` est fourni, le
+    detail categorie/montant de chaque part est inclus ; sinon (compatibilite
+    d'appel), seul le decompte "Fractionnee (N)" est ecrit."""
+    try:
+        split_count = tx["split_count"]
+    except (KeyError, IndexError):
+        split_count = 0
+    if not split_count:
+        return tx["category_name"] or ""
+    if db is None:
+        return f"Fractionnee ({split_count})"
+    splits = db.get_transaction_splits(tx["id"])
+    detail = " / ".join(f"{s['category_name']} {s['amount']:.2f}" for s in splits)
+    return f"Fractionnee ({split_count}) : {detail}" if detail else f"Fractionnee ({split_count})"
+
+
+def export_transactions_csv(transactions: list, output_path: Path, db=None) -> None:
     """transactions : lignes issues de Database.list_transactions() (avec
-    account_name/category_name deja jointes)."""
+    account_name/category_name/split_count deja joints). `db` (optionnel) :
+    passe la base active pour inclure le detail categorie/montant de chaque
+    part d'une transaction fractionnee dans la colonne "Categorie" (voir
+    _category_cell) ; sans lui, seul "Fractionnee (N)" est ecrit."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # utf-8-sig (BOM) : Excel sous Windows n'affiche correctement les
@@ -29,7 +56,7 @@ def export_transactions_csv(transactions: list, output_path: Path) -> None:
         writer.writerow(CSV_HEADER)
         for tx in transactions:
             writer.writerow([
-                tx["id"], tx["date"], tx["account_name"], tx["category_name"] or "",
+                tx["id"], tx["date"], tx["account_name"], _category_cell(db, tx),
                 tx["payee"], tx["memo"], f"{tx['amount']:.2f}", "Oui" if tx["cleared"] else "Non",
             ])
 

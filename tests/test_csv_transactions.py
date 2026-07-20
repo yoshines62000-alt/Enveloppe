@@ -44,6 +44,53 @@ class ExportTransactionsCsvTestCase(unittest.TestCase):
         export_transactions_csv([], output)
         self.assertTrue(output.exists())
 
+    def test_export_marks_split_transactions_with_detail_when_db_is_provided(self):
+        # Trouve a l'audit : une transaction fractionnee a category_id NULL
+        # par design (voir Database.set_transaction_splits), donc la colonne
+        # Categorie de l'export etait auparavant totalement vide - aucune
+        # indication qu'il s'agissait d'un fractionnement (perte de donnee
+        # silencieuse), alors que l'IHM affiche deja "Fractionnee (2)".
+        household_id = self.db.add_category("Maison")
+        tx_id = self.db.add_transaction(
+            self.account_id, "2026-01-05", -100.0, category_id=self.category_id, payee="Grand magasin",
+        )
+        self.db.set_transaction_splits(tx_id, [
+            {"category_id": self.category_id, "amount": -60.0},
+            {"category_id": household_id, "amount": -40.0},
+        ])
+        output = self.tmp / "export.csv"
+        export_transactions_csv(self.db.list_transactions(), output, db=self.db)
+
+        with open(output, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(len(rows), 1)
+        cell = rows[0]["Categorie"]
+        self.assertIn("Fractionnee (2)", cell)
+        self.assertIn("Epicerie -60.00", cell)
+        self.assertIn("Maison -40.00", cell)
+
+    def test_export_without_db_still_flags_split_transactions_without_detail(self):
+        household_id = self.db.add_category("Maison")
+        tx_id = self.db.add_transaction(self.account_id, "2026-01-05", -100.0, category_id=self.category_id)
+        self.db.set_transaction_splits(tx_id, [
+            {"category_id": self.category_id, "amount": -60.0},
+            {"category_id": household_id, "amount": -40.0},
+        ])
+        output = self.tmp / "export.csv"
+        export_transactions_csv(self.db.list_transactions(), output)  # pas de db fourni
+
+        with open(output, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(rows[0]["Categorie"], "Fractionnee (2)")
+
+    def test_export_of_an_ordinary_transaction_is_unaffected_by_the_split_fix(self):
+        self.db.add_transaction(self.account_id, "2026-01-05", -10.0, category_id=self.category_id)
+        output = self.tmp / "export.csv"
+        export_transactions_csv(self.db.list_transactions(), output, db=self.db)
+        with open(output, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(rows[0]["Categorie"], "Epicerie")
+
 
 class ImportTransactionsCsvTestCase(unittest.TestCase):
     def setUp(self):
@@ -123,6 +170,21 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         result = import_transactions_csv(self.db, path)
         self.assertEqual(result["imported"], 0)
         self.assertEqual(len(result["skipped"]), 1)
+
+    def test_calendar_invalid_date_is_skipped_and_reported_instead_of_inserted_silently(self):
+        # Trouve a l'audit : contrairement a la GUI (qui pre-valide via
+        # date.fromisoformat() avant d'appeler db.add_transaction),
+        # import_transactions_csv transmet la date brute du CSV sans garde-
+        # fou - "2026-02-30" passait le regex de format de db.py (jour
+        # 01-31) et s'inserait silencieusement, sans aucune exception, avant
+        # que db._validate_date() ne fasse aussi une vraie verification
+        # calendaire. Ce test verrouille que le chemin CSV est desormais
+        # protege au meme niveau que la GUI.
+        path = self._write_csv([["", "2026-02-30", "Compte courant", "", "", "", "-5.00", "Non"]])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertEqual(self.db.list_transactions(), [])  # aucune insertion silencieuse
 
     def test_cleared_column_accepts_oui_non_case_insensitively(self):
         path = self._write_csv([

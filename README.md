@@ -25,16 +25,53 @@ sur un simple solde de compte.
 ## Fonctionnalités
 
 - **Comptes multiples** : courant, épargne, espèces... chacun avec son
-  solde de départ et son solde actuel calculé automatiquement.
+  solde de départ, son solde actuel et son solde **pointé** (rapprochement
+  bancaire, voir plus bas) calculés automatiquement. Un compte peut être
+  archivé sans perdre l'argent qu'il contient.
 - **Catégories groupées** : organisez vos enveloppes par groupe (ex :
-  "Obligations", "Loisirs") pour une vue plus claire.
+  "Obligations", "Loisirs") pour une vue plus claire, avec un **objectif
+  d'épargne** optionnel par catégorie (suivi visuel de la progression dans
+  l'onglet Budget).
 - **Budget mensuel avec navigation** : parcourez les mois passés et futurs,
   assignez un montant à chaque catégorie, et voyez immédiatement l'activité
-  et le disponible (report inclus) pour le mois affiché.
+  et le disponible (report inclus) pour le mois affiché. Les lignes en
+  dépassement sont surlignées en rouge, et une **bannière** signale dès
+  l'ouverture de l'application le nombre d'enveloppes en dépassement, sans
+  avoir à ouvrir l'onglet Budget.
 - **"Reste à assigner"** : indicateur toujours visible de l'argent que vous
   avez mais n'avez pas encore donné a une enveloppe.
+- **Déplacer de l'argent entre enveloppes** : rééquilibrez votre budget d'un
+  mois sans changer le total assigné ni le reste à assigner.
+- **Copier le budget du mois précédent** : reproduisez en un clic les
+  montants assignés le mois passé, sans écraser une saisie déjà faite.
 - **Transactions** : ajoutez vos dépenses/revenus avec compte, catégorie,
-  bénéficiaire et montant ; filtrez par compte.
+  bénéficiaire, mémo et montant (virgule ou point décimal acceptés) ;
+  filtrez par compte, modifiez ou supprimez une transaction existante.
+- **Fractionnement d'une transaction** : répartissez un seul achat sur
+  plusieurs enveloppes (ex : un plein de courses à la fois "Épicerie" et
+  "Entretien maison").
+- **Virements entre comptes** : déplacez de l'argent d'un compte à un autre
+  sans jamais affecter le budget à enveloppes (un virement entre vos propres
+  comptes n'est ni une dépense ni un revenu).
+- **Rapprochement bancaire (pointage)** : marquez les transactions comme
+  "pointées" au fur et à mesure que vous les retrouvez sur votre relevé
+  bancaire, pour vérifier que le solde pointé de l'application correspond à
+  la réalité.
+- **Transactions récurrentes** : définissez un modèle (loyer, abonnement...)
+  avec sa fréquence (hebdomadaire, mensuelle, annuelle) ; les échéances dues
+  sont générées automatiquement à l'ouverture de l'application, en
+  rattrapant les occurrences manquées si besoin.
+- **Import et export CSV des transactions** : exportez votre historique vers
+  un tableur, ou importez des transactions depuis un autre outil (les
+  doublons exacts sont détectés et ignorés automatiquement).
+- **Rapports de dépenses** : tendances de dépenses réelles par catégorie sur
+  3, 6 ou 12 derniers mois.
+- **Vue annuelle du budget** : le montant assigné à chaque catégorie, mois
+  par mois, sur toute une année, pour repérer d'un coup d'œil les mois sans
+  aucune assignation.
+- **Sauvegarde et restauration** : copie complète de vos données vers
+  l'emplacement de votre choix, en un clic, sans fermer l'application (voir
+  la section dédiée plus bas).
 - **100 % local, zéro cloud** : aucune connexion bancaire, aucun compte,
   aucune télémétrie. Vos données financières ne quittent jamais votre
   machine.
@@ -64,19 +101,42 @@ standard de Python sous Windows).
 
 1. Onglet **Comptes** : ajoutez vos comptes avec leur solde de départ.
 2. Onglet **Catégories** : créez vos enveloppes (ex : Loyer, Courses,
-   Loisirs), avec un groupe optionnel pour les organiser.
+   Loisirs), avec un groupe et un objectif d'épargne optionnels.
 3. Onglet **Budget** : assignez un montant à chaque catégorie pour le mois
    affiché (double-clic sur une ligne). Le "Reste à assigner" en haut à
-   droite indique combien d'argent n'est pas encore affecté.
-4. Onglet **Transactions** : enregistrez vos dépenses et revenus. Une
-   dépense catégorisée réduit automatiquement le disponible de son
-   enveloppe ; un revenu sans catégorie augmente le "Reste à assigner".
+   droite indique combien d'argent n'est pas encore affecté ; une bannière
+   rouge signale, dès l'ouverture de l'application, les enveloppes en
+   dépassement pour le mois affiché.
+4. Onglet **Transactions** : enregistrez vos dépenses et revenus (double-
+   clic sur une ligne pour la modifier). Une dépense catégorisée réduit
+   automatiquement le disponible de son enveloppe ; un revenu sans catégorie
+   augmente le "Reste à assigner". Depuis cet onglet, vous pouvez aussi
+   fractionner une transaction sur plusieurs catégories, effectuer un
+   virement entre deux comptes, pointer une ou plusieurs transactions
+   (rapprochement bancaire), et importer/exporter vos transactions en CSV.
+5. Onglet **Récurrentes** : définissez un modèle de transaction répétitive
+   (loyer, abonnement...) avec sa fréquence ; les échéances dues sont
+   générées automatiquement à chaque ouverture de l'application.
+6. Onglets **Rapports** et **Vue annuelle** : consultez vos tendances de
+   dépenses par catégorie, et le plan budgétaire de toute une année.
+7. Onglet **Paramètres** : sauvegardez vos données en un clic (voir la
+   section **Sauvegarde et restauration** ci-dessous).
 
 ## Confidentialité
 
 - Aucune donnée ne quitte votre machine : pas de compte, pas de serveur, pas
   de télémétrie, aucune connexion à votre banque.
 - Les données sont stockées dans `%APPDATA%\Enveloppe\enveloppe.sqlite`.
+
+## Sauvegarde et restauration
+
+- Onglet **Paramètres > Sauvegarde** : le bouton « Sauvegarder les
+  données... » enregistre une copie complète du fichier de données à
+  l'emplacement de votre choix, sans fermer l'application ni verrouiller la
+  base active.
+- Pour restaurer une sauvegarde : fermez Enveloppe, puis remplacez le
+  fichier `%APPDATA%\Enveloppe\enveloppe.sqlite` par la copie de sauvegarde
+  (le bouton « Ouvrir le dossier de données » y accède directement).
 
 ## Créer un exécutable autonome (.exe)
 
@@ -98,7 +158,9 @@ par Git.
 
 Une suite de tests automatisés couvre toute la logique de calcul (report
 d'enveloppe positif et négatif, "reste à assigner", navigation entre mois)
-sur une vraie base SQLite temporaire.
+sur une vraie base SQLite temporaire, ainsi qu'un test de bout en bout qui
+pilote la vraie interface Tkinter (dialogues, boutons, Treeview) plutôt que
+d'appeler directement les fonctions internes.
 
 ```bash
 python -m unittest discover tests -v
@@ -107,10 +169,11 @@ python -m unittest discover tests -v
 ## Structure du projet
 
 ```
-db.py                 # couche donnees SQLite : comptes, categories, budget, transactions
-budget.py             # logique pure du budget a enveloppes (report, reste a assigner)
+db.py                  # couche donnees SQLite : comptes, categories, budget, transactions, sauvegarde
+budget.py              # logique pure du budget a enveloppes (report, reste a assigner)
+csv_transactions.py    # export/import CSV des transactions
 gui.py                 # interface graphique Tkinter
-tests/                 # tests automatises
+tests/                 # tests automatises (dont un smoke test bout en bout de la GUI)
 requirements.txt      # aucune dependance tierce a l'execution
 Lancer.vbs            # raccourci de lancement double-clic (sans console)
 Lancer.bat            # raccourci de lancement double-clic (avec console, pour debug)

@@ -49,6 +49,20 @@ class EnveloppeApp:
         donate_label.pack(side=RIGHT, padx=8, pady=4)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
+        # Banniere de depassement : placee HORS du notebook (au-dessus), pour
+        # rester visible des l'ouverture de l'app quel que soit l'onglet
+        # affiche - contrairement au coloriage en rouge des lignes de
+        # l'onglet Budget (tag "overspent"), qui n'est visible que si
+        # l'utilisateur consulte cet onglet precis. Meme pattern que
+        # _refresh_overdue_summary de TempoFacture (calcul proactif au
+        # demarrage), voir _refresh_overspent_summary.
+        self.overspent_summary_var = StringVar(value="")
+        overspent_label = ttk.Label(
+            self.root, textvariable=self.overspent_summary_var,
+            foreground="#B00020", font=("Segoe UI", 10, "bold"),
+        )
+        overspent_label.pack(fill=X, padx=10, pady=(6, 0))
+
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill=BOTH, expand=True, padx=8, pady=8)
 
@@ -59,6 +73,7 @@ class EnveloppeApp:
         self.reports_tab = ttk.Frame(notebook)
         self.annual_tab = ttk.Frame(notebook)
         self.recurring_tab = ttk.Frame(notebook)
+        self.settings_tab = ttk.Frame(notebook)
 
         notebook.add(self.accounts_tab, text="Comptes")
         notebook.add(self.categories_tab, text="Categories")
@@ -67,6 +82,7 @@ class EnveloppeApp:
         notebook.add(self.recurring_tab, text="Recurrentes")
         notebook.add(self.reports_tab, text="Rapports")
         notebook.add(self.annual_tab, text="Vue annuelle")
+        notebook.add(self.settings_tab, text="Parametres")
 
         self._build_accounts_tab()
         self._build_categories_tab()
@@ -75,6 +91,7 @@ class EnveloppeApp:
         self._build_recurring_tab()
         self._build_reports_tab()
         self._build_annual_tab()
+        self._build_settings_tab()
 
         self._refresh_accounts()
         self._refresh_categories()
@@ -374,6 +391,24 @@ class EnveloppeApp:
             ), tags=tuple(tags))
         ready = bg.ready_to_assign(self.db, self.current_month)
         self.ready_to_assign_var.set(f"Reste a assigner : {bg.format_amount(ready)}")
+        self._refresh_overspent_summary()
+
+    def _refresh_overspent_summary(self):
+        """Met a jour la banniere proactive de depassement (voir sa creation
+        dans __init__). Compte toute categorie (active OU archivee : un
+        depassement range dans une categorie archivee reste un depassement
+        reel, meme motif que le coloriage "overspent" de l'onglet Budget, qui
+        inclut deja archived_with_balance) dont le disponible du mois affiche
+        est negatif."""
+        count = sum(
+            1 for category in self.db.list_categories(include_archived=True)
+            if bg.category_available(self.db, category["id"], self.current_month) < 0
+        )
+        if not count:
+            self.overspent_summary_var.set("")
+            return
+        plural = "s" if count > 1 else ""
+        self.overspent_summary_var.set(f"{count} enveloppe{plural} en depassement ce mois-ci")
 
     def _copy_previous_month_budget(self):
         previous_month = bg.shift_month(self.current_month, -1)
@@ -609,7 +644,7 @@ class EnveloppeApp:
                 if not row["category_var"].get():
                     continue
                 try:
-                    amount = float(row["amount_var"].get())
+                    amount = self._parse_float(row["amount_var"].get(), "Chaque part")
                 except ValueError:
                     messagebox.showwarning(APP_TITLE, "Chaque part doit avoir un montant numerique.", parent=dialog)
                     return
@@ -641,7 +676,7 @@ class EnveloppeApp:
         if not output:
             return
         account_id = self._parse_id(self.tx_filter_account_var.get()) if self.tx_filter_account_var.get() and self.tx_filter_account_var.get() != "Tous" else None
-        export_transactions_csv(self.db.list_transactions(account_id=account_id), Path(output))
+        export_transactions_csv(self.db.list_transactions(account_id=account_id), Path(output), db=self.db)
         messagebox.showinfo(APP_TITLE, f"Transactions exportees : {Path(output).name}")
 
     def _import_transactions_csv(self):
@@ -822,7 +857,7 @@ class EnveloppeApp:
             from_id = self._parse_id(from_var.get())
             to_id = self._parse_id(to_var.get())
             try:
-                amount = float(amount_var.get())
+                amount = self._parse_float(amount_var.get(), "Le montant")
             except ValueError:
                 messagebox.showwarning(APP_TITLE, "Le montant doit etre un nombre.", parent=dialog)
                 return
@@ -1180,6 +1215,67 @@ class EnveloppeApp:
         for row in overview["rows"]:
             values = (row["name"],) + tuple(bg.format_amount(row["amounts"][m]) for m in months) + (bg.format_amount(row["total"]),)
             self.annual_tree.insert("", END, values=values)
+
+    # -- onglet Parametres ------------------------------------------------------
+
+    def _build_settings_tab(self):
+        frame = self.settings_tab
+        ttk.Label(
+            frame,
+            text="Toutes les donnees sont stockees localement sur cet ordinateur,\n"
+                 "aucune connexion internet ni compte n'est necessaire.",
+            justify=LEFT,
+        ).pack(anchor="w", padx=10, pady=20)
+
+        backup_frame = ttk.LabelFrame(frame, text="Sauvegarde", padding=10)
+        backup_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Label(
+            backup_frame,
+            text="Tous vos comptes, categories, budgets et transactions tiennent dans un\n"
+                 "seul fichier : sauvegardez-le regulierement pour ne rien perdre en cas\n"
+                 "de probleme disque.",
+            justify=LEFT,
+        ).pack(anchor="w", pady=(0, 8))
+        buttons = ttk.Frame(backup_frame)
+        buttons.pack(anchor="w")
+        ttk.Button(buttons, text="Sauvegarder les donnees...", command=self._backup_database).pack(side=LEFT)
+        ttk.Button(buttons, text="Ouvrir le dossier de donnees", command=self._open_data_dir).pack(side=LEFT, padx=(6, 0))
+
+    def _backup_database(self):
+        from datetime import date
+        from tkinter import filedialog
+
+        default_name = f"enveloppe-sauvegarde-{date.today().isoformat()}.sqlite"
+        path = filedialog.asksaveasfilename(
+            title="Sauvegarder les donnees", initialfile=default_name,
+            defaultextension=".sqlite", filetypes=[("Base SQLite", "*.sqlite")],
+        )
+        if not path:
+            return
+        import sqlite3
+        try:
+            self.db.backup_to(Path(path))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            # sqlite3.Error en plus d'OSError/ValueError : sqlite3.connect()
+            # sur une destination inaccessible (dossier disparu, lecteur
+            # demonte, chemin verrouille) leve un sqlite3.OperationalError,
+            # qui n'est PAS une sous-classe d'OSError - sans cette clause, ce
+            # cas pourtant plausible (cle USB retiree entre l'ouverture du
+            # dialogue et le clic) remontait comme un plantage non gere au
+            # lieu d'un message clair (meme motif que TempoFacture.Database.
+            # backup_to / _backup_database).
+            messagebox.showerror(APP_TITLE, f"Impossible d'enregistrer la sauvegarde : {exc}")
+            return
+        messagebox.showinfo(
+            APP_TITLE,
+            f"Sauvegarde enregistree :\n{path}\n\n"
+            "Pour restaurer : fermez Enveloppe, puis remplacez le fichier de donnees "
+            "actif par cette copie.",
+        )
+
+    def _open_data_dir(self):
+        import os
+        os.startfile(_data_dir())  # nosec - ouverture Explorateur Windows d'un dossier local
 
     # -- fermeture ------------------------------------------------------------
 

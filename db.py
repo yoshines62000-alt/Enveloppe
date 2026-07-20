@@ -7,6 +7,7 @@ format YYYY-MM, pour permettre des comparaisons lexicographiques directes
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -30,8 +31,42 @@ def _validate_month(month: str) -> None:
 
 
 def _validate_date(date_str: str) -> None:
+    # Le regex seul ne verifie que le FORMAT (zero-pad, jour 01-31) et pas le
+    # calendrier : "2026-02-30" ou "2026-04-31" le passaient tel quel, et
+    # s'inseraient silencieusement (aucune exception) via add_transaction -
+    # notamment depuis import_transactions_csv (csv_transactions.py), qui ne
+    # pre-valide pas la date avant de l'y transmettre (contrairement a la
+    # GUI, qui pre-valide deja via date.fromisoformat() dans _add_transaction/
+    # _edit_transaction) - bug trouve a l'audit. date.fromisoformat(), appele
+    # ICI dans la couche donnees, protege desormais TOUS les chemins
+    # d'insertion (GUI et import CSV) au meme niveau.
     if not _DATE_FORMAT_RE.match(date_str):
         raise ValueError(f"Format de date invalide : {date_str!r} (attendu YYYY-MM-DD)")
+    from datetime import date as _date_cls
+    try:
+        _date_cls.fromisoformat(date_str)
+    except ValueError:
+        raise ValueError(f"Date invalide : {date_str!r} (ce jour n'existe pas dans le calendrier)")
+
+
+def _month_range_bounds(month: str) -> tuple:
+    """Bornes [debut_inclus, fin_exclusive) au format YYYY-MM-DD pour un mois
+    'YYYY-MM', par simple arithmetique entiere (aucune dependance a budget.py,
+    qui appelle db.py et jamais l'inverse). Permet de remplacer un filtre SQL
+    du type `substr(date, 1, 7) <= ?` (non sargable : SQLite doit recalculer
+    substr() sur CHAQUE ligne, un index sur `date` est donc inutilisable) par
+    une comparaison directe sur la colonne `date` (`date < fin_exclusive`),
+    qui EXPLOITE un index. Equivalence stricte car `date` est toujours stocke
+    au format zero-pad YYYY-MM-DD (impose par _validate_date) : la comparaison
+    lexicographique de chaines donne exactement le meme resultat que la
+    comparaison sur le prefixe YYYY-MM extrait par substr()."""
+    year, mon = int(month[:4]), int(month[5:7])
+    start = f"{year:04d}-{mon:02d}-01"
+    if mon == 12:
+        end = f"{year + 1:04d}-01-01"
+    else:
+        end = f"{year:04d}-{mon + 1:02d}-01"
+    return start, end
 
 
 class Database:
@@ -48,6 +83,35 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+    def backup_to(self, dest_path: Path) -> None:
+        """Copie coherente de la base active vers `dest_path`, via l'API de
+        sauvegarde native de sqlite3 (fonctionne meme connexion ouverte,
+        sans verrouiller la base source). Refuse d'ecraser la base active
+        elle-meme : comparaison des chemins RESOLUS (attrape un alias
+        comme "..\\enveloppe.sqlite") ET, si la destination existe deja,
+        comparaison d'identite de fichier via os.path.samefile (attrape un
+        LIEN PHYSIQUE - hard link - vers le meme fichier, que resolve() ne
+        detecte jamais puisqu'un lien physique n'est pas un point de
+        reparse a suivre ; sans cette deuxieme verification, sqlite3
+        tenterait d'ouvrir une seconde connexion vers le fichier physique
+        deja ouvert par self.conn et resterait bloque indefiniment en
+        attente du verrou, gelant toute l'application - meme pattern que
+        TempoFacture.Database.backup_to)."""
+        dest_path = Path(dest_path)
+        if dest_path.resolve() == self.path.resolve():
+            raise ValueError("La destination ne peut pas etre le fichier de donnees actif.")
+        if dest_path.exists():
+            try:
+                if os.path.samefile(dest_path, self.path):
+                    raise ValueError("La destination ne peut pas etre le fichier de donnees actif.")
+            except OSError:
+                pass  # comparaison impossible (permissions...) : on laisse la suite echouer normalement
+        dest_conn = sqlite3.connect(str(dest_path))
+        try:
+            self.conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
 
     def _create_schema(self) -> None:
         self.conn.executescript("""
@@ -110,6 +174,13 @@ class Database:
             active INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         );
+
+        -- category_id + date : les deux colonnes filtrees ensemble par
+        -- sum_transactions_up_to/sum_transactions_for_month/list_transactions
+        -- (up_to_month), les requetes les plus frequentes de l'application
+        -- (recalculees a chaque affichage de l'onglet Budget, une fois par
+        -- categorie). Sans index, chacune force un scan complet de la table.
+        CREATE INDEX IF NOT EXISTS idx_transactions_category_date ON transactions(category_id, date);
         """)
         self.conn.commit()
         # transfer_id a ete ajoutee apres la sortie initiale : les bases
@@ -546,8 +617,12 @@ class Database:
             query += " AND transactions.category_id = ?"
             params.append(category_id)
         if up_to_month is not None:
-            query += " AND substr(transactions.date, 1, 7) <= ?"
-            params.append(up_to_month)
+            # date < fin_exclusive plutot que substr(date,1,7) <= up_to_month :
+            # comparaison sargable equivalente (voir _month_range_bounds),
+            # qui peut exploiter idx_transactions_category_date.
+            _, end_exclusive = _month_range_bounds(up_to_month)
+            query += " AND transactions.date < ?"
+            params.append(end_exclusive)
         query += " ORDER BY transactions.date, transactions.id"
         return self.conn.execute(query, params).fetchall()
 
@@ -556,27 +631,37 @@ class Database:
         # set_transaction_splits) : sa contribution a chaque enveloppe
         # passe entierement par transaction_splits, d'ou l'UNION ci-dessous
         # plutot qu'une simple somme sur transactions.category_id.
+        #
+        # `date < fin_exclusive` plutot que `substr(date,1,7) <= month` :
+        # comparaison sargable strictement equivalente (voir
+        # _month_range_bounds), qui exploite idx_transactions_category_date
+        # au lieu de forcer un recalcul de substr() sur chaque ligne.
+        _, end_exclusive = _month_range_bounds(month)
         row = self.conn.execute(
             """SELECT COALESCE(SUM(amount), 0) FROM (
-                SELECT amount FROM transactions WHERE category_id = ? AND substr(date, 1, 7) <= ?
+                SELECT amount FROM transactions WHERE category_id = ? AND date < ?
                 UNION ALL
                 SELECT transaction_splits.amount FROM transaction_splits
                 JOIN transactions ON transactions.id = transaction_splits.transaction_id
-                WHERE transaction_splits.category_id = ? AND substr(transactions.date, 1, 7) <= ?
+                WHERE transaction_splits.category_id = ? AND transactions.date < ?
             )""",
-            (category_id, month, category_id, month),
+            (category_id, end_exclusive, category_id, end_exclusive),
         ).fetchone()
         return round(row[0], 2)
 
     def sum_transactions_for_month(self, category_id: int, month: str) -> float:
+        # `date >= debut AND date < fin_exclusive` plutot que
+        # `substr(date,1,7) = month` : meme motif de sargabilite que
+        # sum_transactions_up_to ci-dessus (voir _month_range_bounds).
+        start, end_exclusive = _month_range_bounds(month)
         row = self.conn.execute(
             """SELECT COALESCE(SUM(amount), 0) FROM (
-                SELECT amount FROM transactions WHERE category_id = ? AND substr(date, 1, 7) = ?
+                SELECT amount FROM transactions WHERE category_id = ? AND date >= ? AND date < ?
                 UNION ALL
                 SELECT transaction_splits.amount FROM transaction_splits
                 JOIN transactions ON transactions.id = transaction_splits.transaction_id
-                WHERE transaction_splits.category_id = ? AND substr(transactions.date, 1, 7) = ?
+                WHERE transaction_splits.category_id = ? AND transactions.date >= ? AND transactions.date < ?
             )""",
-            (category_id, month, category_id, month),
+            (category_id, start, end_exclusive, category_id, start, end_exclusive),
         ).fetchone()
         return round(row[0], 2)
