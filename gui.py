@@ -302,6 +302,7 @@ class EnveloppeApp:
         ttk.Label(top, textvariable=self.budget_month_var, font=("Segoe UI", 12, "bold")).pack(side=LEFT, padx=15)
         ttk.Button(top, text="Mois suivant >", command=lambda: self._change_month(1)).pack(side=LEFT)
         ttk.Button(top, text="Copier le budget du mois precedent", command=self._copy_previous_month_budget).pack(side=LEFT, padx=15)
+        ttk.Button(top, text="Deplacer entre enveloppes...", command=self._open_move_between_envelopes_dialog).pack(side=LEFT)
 
         self.ready_to_assign_var = StringVar()
         ready_label = ttk.Label(top, textvariable=self.ready_to_assign_var, font=("Segoe UI", 12, "bold"))
@@ -388,6 +389,70 @@ class EnveloppeApp:
             messagebox.showinfo(APP_TITLE, f"{copied} categorie(s) mise(s) a jour depuis {bg.month_label(previous_month)}.")
         else:
             messagebox.showinfo(APP_TITLE, "Rien a copier : aucune assignation trouvee le mois precedent, ou tout est deja assigne ce mois-ci.")
+
+    def _open_move_between_envelopes_dialog(self):
+        categories, category_labels = self._category_choices()
+        if len(categories) < 2:
+            messagebox.showwarning(APP_TITLE, "Il faut au moins deux categories pour deplacer de l'argent.")
+            return
+
+        # Pre-selectionne la categorie de la ligne choisie dans le tableau,
+        # si elle est encore active : une ligne archivee peut apparaitre
+        # dans le budget (solde restant) mais n'est plus proposee pour de
+        # nouveaux mouvements, comme pour toute nouvelle saisie.
+        selection = self.budget_tree.selection()
+        default_from = category_labels[0]
+        if selection:
+            selected_label = next((l for l in category_labels if l.startswith(f"{selection[0]} - ")), None)
+            if selected_label is not None:
+                default_from = selected_label
+
+        from tkinter import Toplevel
+
+        dialog = Toplevel(self.root)
+        dialog.title("Deplacer entre enveloppes")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        from_var = StringVar(value=default_from)
+        to_var = StringVar()
+        amount_var = StringVar()
+
+        ttk.Label(
+            dialog, text=f"Mois : {bg.month_label(self.current_month)}", font=("Segoe UI", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 0))
+        ttk.Label(dialog, text="Categorie source").grid(row=1, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Combobox(dialog, textvariable=from_var, values=category_labels, width=25, state="readonly").grid(row=1, column=1, padx=10, pady=(5, 0))
+        ttk.Label(dialog, text="Categorie destination").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Combobox(dialog, textvariable=to_var, values=category_labels, width=25, state="readonly").grid(row=2, column=1, padx=10, pady=(5, 0))
+        ttk.Label(dialog, text="Montant").grid(row=3, column=0, sticky="w", padx=10, pady=(5, 0))
+        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
+        ttk.Label(
+            dialog,
+            text="Deplacer plus que le disponible est permis : le 'Budgete' de la source devient negatif, a combler plus tard.",
+            foreground="#666", wraplength=320,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
+
+        def on_save():
+            from_id = self._parse_id(from_var.get())
+            to_id = self._parse_id(to_var.get())
+            if from_id is None or to_id is None:
+                messagebox.showwarning(APP_TITLE, "Choisissez une categorie source et une destination.", parent=dialog)
+                return
+            try:
+                amount = self._parse_float(amount_var.get(), "Le montant")
+                bg.move_between_envelopes(self.db, from_id, to_id, self.current_month, amount)
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            self._refresh_budget()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=5, column=0, columnspan=2, pady=10)
+        ttk.Button(buttons, text="Deplacer", command=on_save).pack(side=LEFT, padx=5)
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
 
     def _edit_budget_entry(self, event=None):
         selection = self.budget_tree.selection()

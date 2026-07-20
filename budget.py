@@ -92,6 +92,24 @@ def ready_to_assign(db, month: Optional[str] = None) -> float:
     return round(db.total_on_budget_balance() - total_in_envelopes, 2)
 
 
+def move_between_envelopes(db, from_category_id: int, to_category_id: int, month: str, amount: float) -> None:
+    """Deplace `amount` de l'enveloppe source vers l'enveloppe destination en
+    ajustant leurs assignations du mois de -amount/+amount. La somme des
+    assignations reste inchangee par construction, donc le reste a assigner
+    ne bouge jamais (voir ready_to_assign) : deplacer de l'argent entre
+    enveloppes n'en cree ni n'en detruit. Deplacer plus que le disponible de
+    la source est volontairement permis - son solde devient negatif
+    (comportement YNAB standard), charge a l'utilisateur de le combler."""
+    if amount <= 0:
+        raise ValueError("Le montant a deplacer doit etre superieur a zero.")
+    if from_category_id == to_category_id:
+        raise ValueError("La categorie source et la categorie destination doivent etre differentes.")
+    from_assigned = db.get_budget_entry(from_category_id, month)
+    to_assigned = db.get_budget_entry(to_category_id, month)
+    db.set_budget_entry(from_category_id, month, round(from_assigned - amount, 2))
+    db.set_budget_entry(to_category_id, month, round(to_assigned + amount, 2))
+
+
 def spending_report(db, end_month: Optional[str] = None, num_months: int = 6) -> dict:
     """Rapport de depenses par categorie sur les `num_months` mois se
     terminant a `end_month` inclus (par defaut le mois courant). Pour

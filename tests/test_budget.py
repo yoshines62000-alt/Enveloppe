@@ -149,6 +149,55 @@ class ReadyToAssignTestCase(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class MoveBetweenEnvelopesTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = Database(self.tmp / "test.sqlite")
+        self.addCleanup(self.db.close)
+        self.account_id = self.db.add_account("Compte", starting_balance=1000.0)
+        self.groceries_id = self.db.add_category("Epicerie")
+        self.fun_id = self.db.add_category("Loisirs")
+        self.db.set_budget_entry(self.groceries_id, "2026-01", 300.0)
+        self.db.set_budget_entry(self.fun_id, "2026-01", 100.0)
+
+    def test_move_shifts_available_by_exactly_the_amount_on_each_side(self):
+        bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", 50.0)
+        self.assertEqual(bg.category_available(self.db, self.groceries_id, "2026-01"), 250.0)
+        self.assertEqual(bg.category_available(self.db, self.fun_id, "2026-01"), 150.0)
+
+    def test_move_adjusts_the_month_assignments_symmetrically(self):
+        bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", 50.0)
+        self.assertEqual(self.db.get_budget_entry(self.groceries_id, "2026-01"), 250.0)
+        self.assertEqual(self.db.get_budget_entry(self.fun_id, "2026-01"), 150.0)
+
+    def test_move_does_not_change_ready_to_assign(self):
+        # Un deplacement ne cree ni ne detruit d'argent : la somme des
+        # assignations du mois est inchangee par construction.
+        before = bg.ready_to_assign(self.db, "2026-01")
+        bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", 50.0)
+        after = bg.ready_to_assign(self.db, "2026-01")
+        self.assertEqual(before, after)
+
+    def test_move_rejects_the_same_category_on_both_sides(self):
+        with self.assertRaises(ValueError):
+            bg.move_between_envelopes(self.db, self.groceries_id, self.groceries_id, "2026-01", 50.0)
+
+    def test_move_rejects_a_zero_or_negative_amount(self):
+        with self.assertRaises(ValueError):
+            bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", 0.0)
+        with self.assertRaises(ValueError):
+            bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", -50.0)
+
+    def test_moving_more_than_available_is_allowed_and_goes_negative(self):
+        # Comportement YNAB assume : on peut vider une enveloppe au-dela de
+        # son solde, elle passe en negatif et devra etre comblee - jamais
+        # d'erreur bloquante ici.
+        bg.move_between_envelopes(self.db, self.groceries_id, self.fun_id, "2026-01", 500.0)
+        self.assertEqual(self.db.get_budget_entry(self.groceries_id, "2026-01"), -200.0)
+        self.assertEqual(bg.category_available(self.db, self.groceries_id, "2026-01"), -200.0)
+        self.assertEqual(bg.category_available(self.db, self.fun_id, "2026-01"), 600.0)
+
+
 class FormatAmountTestCase(unittest.TestCase):
     def test_format_amount_uses_currency_code_and_space_separator(self):
         self.assertEqual(bg.format_amount(1234.5), "1 234.50 EUR")
