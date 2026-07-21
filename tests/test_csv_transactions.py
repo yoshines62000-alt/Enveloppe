@@ -314,6 +314,111 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertEqual(len(self.db.list_transactions()), 2)
 
+    # -- optimisation audit Phase 3 : commits groupes au lieu d'un par ligne --
+
+    def test_import_commits_by_batch_instead_of_once_per_row(self):
+        # Trouve a l'audit : import_transactions_csv appelait auparavant
+        # db.add_transaction (qui committe individuellement) pour CHAQUE
+        # ligne - 2000 lignes = 2000 commits SQLite = 9.86s mesures a
+        # l'audit, l'import etant en plus synchrone sur le thread Tk
+        # principal (voir gui.py). Ce test verrouille que le nombre de
+        # commits reste borne (proportionnel au nombre de LOTS, pas au
+        # nombre de lignes) : 450 lignes / lots de 200 -> commits a la ligne
+        # 200, a la ligne 400, puis un commit final pour les 50 restantes =
+        # 3 commits, jamais 450.
+        rows = [
+            ["", f"2026-01-{(i % 28) + 1:02d}", "Compte courant", "", f"Ligne {i}", "", f"-{i % 50 + 1}.00", "Non"]
+            for i in range(450)
+        ]
+        path = self._write_csv(rows)
+
+        # sqlite3.Connection est un type C : ses attributs (dont `commit`)
+        # sont en lecture seule et ne peuvent pas etre patches directement
+        # (contrairement a un objet Python normal). On remplace donc
+        # temporairement self.db.conn par un mince proxy qui compte les
+        # appels a commit() et delegue tout le reste (execute, row_factory,
+        # ...) a la vraie connexion.
+        class _CommitCountingConnProxy:
+            def __init__(self, real_conn):
+                self._real_conn = real_conn
+                self.commit_count = 0
+
+            def commit(self):
+                self.commit_count += 1
+                self._real_conn.commit()
+
+            def __getattr__(self, name):
+                return getattr(self._real_conn, name)
+
+        proxy = _CommitCountingConnProxy(self.db.conn)
+        real_conn = self.db.conn
+        self.db.conn = proxy
+        try:
+            result = import_transactions_csv(self.db, path)
+        finally:
+            self.db.conn = real_conn
+
+        self.assertEqual(result["imported"], 450)
+        self.assertEqual(proxy.commit_count, 3)
+        self.assertLess(proxy.commit_count, result["imported"])
+
+    def test_import_of_a_large_csv_is_still_functionally_correct_across_batch_boundaries(self):
+        # Les commits groupes ne doivent rien changer au COMPORTEMENT :
+        # chaque ligne reste validee/rejetee individuellement (montant non
+        # fini rejete, doublon detecte), meme quand des lignes valides et
+        # invalides sont melangees de part et d'autre d'une frontiere de lot
+        # (ici la ligne 200, avec _COMMIT_BATCH_SIZE = 200).
+        rows = []
+        for i in range(210):
+            if i == 199:
+                rows.append(["", "2026-01-05", "Compte courant", "", "Ligne invalide", "", "inf", "Non"])
+            else:
+                rows.append(["", f"2026-01-{(i % 28) + 1:02d}", "Compte courant", "", f"Ligne {i}", "", "-1.00", "Non"])
+        path = self._write_csv(rows)
+
+        result = import_transactions_csv(self.db, path)
+
+        self.assertEqual(result["imported"], 209)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("montant invalide", result["skipped"][0]["reason"])
+        self.assertEqual(len(self.db.list_transactions()), 209)
+
+    def test_importing_2000_rows_is_dramatically_faster_than_the_9_86s_audited_baseline(self):
+        # Mesure empirique (pas juste un comptage de commits) : reproduit le
+        # volume exact de l'audit (2000 lignes) et verifie que l'import
+        # reste tres largement sous le temps mesure avant optimisation
+        # (9.86s, commit par ligne, sans WAL). Seuil large (2s) pour rester
+        # fiable sur une machine chargee tout en detectant une regression
+        # qui ferait revenir a un commit par ligne.
+        import time
+
+        rows = [
+            ["", f"2026-01-{(i % 28) + 1:02d}", "Compte courant", "", f"Ligne {i}", "", f"-{i % 500}.{i % 100:02d}", "Non"]
+            for i in range(2000)
+        ]
+        path = self._write_csv(rows)
+
+        started = time.perf_counter()
+        result = import_transactions_csv(self.db, path)
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(result["imported"], 2000)
+        self.assertLess(elapsed, 2.0, "import de 2000 lignes anormalement lent (regression possible du batching)")
+
+
+class DatabaseWalModeTestCase(unittest.TestCase):
+    def test_database_enables_wal_journal_mode(self):
+        # Complement a l'optimisation de import_transactions_csv : le mode
+        # WAL evite qu'un commit force la reecriture synchrone du fichier de
+        # donnees complet (le mode par defaut, DELETE, le fait a chaque
+        # commit) - determinant pour un import qui committe par lots plutot
+        # que par ligne mais reste base sur des commits reels.
+        tmp = Path(tempfile.mkdtemp())
+        db = Database(tmp / "test.sqlite")
+        self.addCleanup(db.close)
+        mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(mode.lower(), "wal")
+
 
 if __name__ == "__main__":
     unittest.main()

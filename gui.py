@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import queue
 import sys
+import threading
 import webbrowser
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
@@ -600,8 +601,11 @@ class EnveloppeApp:
         actions = ttk.Frame(frame)
         actions.pack(fill=X, padx=10, pady=(0, 10))
         ttk.Label(actions, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
+        self.import_status_var = StringVar(value="")
+        ttk.Label(actions, textvariable=self.import_status_var, foreground="#666").pack(side=LEFT, padx=(10, 0))
         ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=RIGHT)
-        ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv).pack(side=RIGHT, padx=(0, 5))
+        self.import_csv_button = ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv)
+        self.import_csv_button.pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Exporter en CSV...", command=self._export_transactions_csv).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Virement entre comptes...", command=self._open_transfer_dialog).pack(side=RIGHT, padx=(0, 5))
         ttk.Button(actions, text="Fractionner...", command=self._open_split_dialog).pack(side=RIGHT, padx=(0, 5))
@@ -730,11 +734,53 @@ class EnveloppeApp:
             # Repli naturel quand un seul compte existe : un CSV exporte
             # depuis un autre outil ne connait pas forcement son nom exact.
             default_account_id = accounts[0]["id"]
+
+        # Un import de plusieurs milliers de lignes reste une operation de
+        # plusieurs secondes meme apres l'optimisation des commits (voir
+        # csv_transactions.py) - execute sur un thread separe (jamais sur le
+        # thread Tk) pour que la fenetre reste reactive, meme mecanisme
+        # thread + queue.Queue + root.after(...) que update_checker.py /
+        # _poll_update_check. Le worker ouvre sa PROPRE connexion Database
+        # vers le meme fichier plutot que de reutiliser self.db.conn : une
+        # connexion sqlite3 ne doit etre utilisee que depuis le thread qui
+        # l'a creee, et self.db reste utilisable normalement (lecture seule,
+        # tant que le bouton d'import est desactive) pendant que l'import
+        # tourne.
+        result_queue: "queue.Queue" = queue.Queue()
+
+        def worker():
+            try:
+                import_db = Database(Path(self.db.path))
+                try:
+                    result = import_transactions_csv(import_db, Path(input_path), default_account_id=default_account_id)
+                finally:
+                    import_db.close()
+                result_queue.put(("done", result))
+            except CsvImportError as exc:
+                result_queue.put(("error", str(exc)))
+            except Exception as exc:  # filet de securite : ne jamais laisser le thread mourir en silence
+                result_queue.put(("error", str(exc)))
+
+        self.import_csv_button.configure(state="disabled")
+        self.import_status_var.set("Import en cours...")
+        threading.Thread(target=worker, daemon=True).start()
+        self.root.after(100, self._poll_csv_import, result_queue)
+
+    def _poll_csv_import(self, result_queue: "queue.Queue"):
         try:
-            result = import_transactions_csv(self.db, Path(input_path), default_account_id=default_account_id)
-        except CsvImportError as exc:
-            messagebox.showwarning(APP_TITLE, str(exc))
+            status, payload = result_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(100, self._poll_csv_import, result_queue)
             return
+
+        self.import_csv_button.configure(state="normal")
+        self.import_status_var.set("")
+
+        if status == "error":
+            messagebox.showwarning(APP_TITLE, payload)
+            return
+
+        result = payload
         self._refresh_transactions()
         self._refresh_accounts()
         self._refresh_budget()

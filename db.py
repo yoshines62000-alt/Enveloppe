@@ -95,6 +95,17 @@ class Database:
         self.conn = sqlite3.connect(str(path))
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # WAL (Write-Ahead Logging) au lieu du journal par defaut (DELETE) :
+        # un commit n'attend plus la reecriture synchrone du fichier de donnees
+        # complet, seulement un petit append au fichier -wal - determinant pour
+        # un import CSV qui insere des centaines/milliers de lignes (voir
+        # import_transactions_csv, qui commit desormais par lots plutot que
+        # ligne par ligne - les deux optimisations se cumulent). C'est un
+        # reglage persistant, ecrit une fois dans le fichier .sqlite lui-meme
+        # (pas besoin de le repeter a chaque connexion pour qu'il reste actif),
+        # mais l'executer ici a chaque ouverture est sans cout et protege le
+        # tout premier lancement sur une base neuve.
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self._create_schema()
 
     def close(self) -> None:
@@ -351,10 +362,17 @@ class Database:
 
     # -- transactions ---------------------------------------------------------------
 
-    def add_transaction(
+    def add_transaction_no_commit(
         self, account_id: int, date: str, amount: float,
         category_id: Optional[int] = None, payee: str = "", memo: str = "", cleared: bool = False,
     ) -> int:
+        """Meme insertion que add_transaction, sans le commit final - reserve
+        aux appelants qui inserent plusieurs lignes de suite et veulent grouper
+        les commits eux-memes (voir import_transactions_csv dans
+        csv_transactions.py : un commit par ligne importee rendait un import de
+        quelques milliers de transactions tres lent, chaque commit forcant une
+        ecriture disque synchrone individuelle). Meme motif que
+        _set_budget_entry_no_commit / move_budget_entries ci-dessus."""
         _validate_date(date)
         _validate_amount(amount)
         cur = self.conn.execute(
@@ -362,8 +380,17 @@ class Database:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (account_id, category_id, date, payee.strip(), memo.strip(), amount, int(cleared), _now_iso()),
         )
-        self.conn.commit()
         return cur.lastrowid
+
+    def add_transaction(
+        self, account_id: int, date: str, amount: float,
+        category_id: Optional[int] = None, payee: str = "", memo: str = "", cleared: bool = False,
+    ) -> int:
+        transaction_id = self.add_transaction_no_commit(
+            account_id, date, amount, category_id=category_id, payee=payee, memo=memo, cleared=cleared,
+        )
+        self.conn.commit()
+        return transaction_id
 
     def update_transaction(self, transaction_id: int, **fields) -> None:
         allowed = {"account_id", "category_id", "date", "payee", "memo", "amount", "cleared"}

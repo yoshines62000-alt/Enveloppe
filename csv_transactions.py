@@ -11,6 +11,17 @@ from typing import Optional
 
 CSV_HEADER = ["ID", "Date", "Compte", "Categorie", "Beneficiaire", "Memo", "Montant", "Pointee"]
 
+# Nombre de lignes importees entre deux commits SQLite. Un commit par ligne
+# (l'ancien comportement, via db.add_transaction) force une ecriture disque
+# synchrone individuelle pour chaque transaction - mesure a l'audit : 9.86s
+# pour importer 2000 lignes. Grouper les commits par lot conserve le meme
+# comportement fonctionnel exact (chaque ligne reste validee/rejetee
+# individuellement, voir la boucle ci-dessous) tout en supprimant le
+# goulot d'etranglement disque ; un lot plutot qu'un unique commit final
+# limite aussi la quantite de travail perdue si le processus est interrompu
+# en plein import.
+_COMMIT_BATCH_SIZE = 200
+
 
 class CsvImportError(Exception):
     """Fichier CSV illisible ou dont l'entete ne correspond pas au format
@@ -163,12 +174,16 @@ def import_transactions_csv(
         cleared = cleared_text in ("oui", "yes", "true", "1")
 
         try:
-            db.add_transaction(
+            db.add_transaction_no_commit(
                 account_id, date, amount, category_id=category_id, payee=payee,
                 memo=row.get("Memo", ""), cleared=cleared,
             )
             imported += 1
+            if imported % _COMMIT_BATCH_SIZE == 0:
+                db.conn.commit()
         except ValueError as exc:
             skipped.append({"line": line_number, "reason": str(exc)})
+
+    db.conn.commit()  # valide le dernier lot (incomplet) d'insertions
 
     return {"imported": imported, "skipped": skipped, "duplicates": duplicates}
