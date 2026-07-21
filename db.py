@@ -7,6 +7,7 @@ format YYYY-MM, pour permettre des comparaisons lexicographiques directes
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sqlite3
@@ -47,6 +48,21 @@ def _validate_date(date_str: str) -> None:
         _date_cls.fromisoformat(date_str)
     except ValueError:
         raise ValueError(f"Date invalide : {date_str!r} (ce jour n'existe pas dans le calendrier)")
+
+
+def _validate_amount(amount: float) -> None:
+    # float("inf")/float("nan") passent silencieusement au travers d'un simple
+    # `float(...)` (saisie GUI ou ligne CSV importee) : un montant infini
+    # contamine irreversiblement account_balance, total_on_budget_balance et
+    # ready_to_assign (ils deviennent inf pour TOUTE la base, sans exception),
+    # et un NaN est convert en NULL par sqlite3 lors du binding, ce qui viole
+    # la contrainte NOT NULL de la colonne amount et leve une IntegrityError
+    # non geree plus haut - bug trouve a l'audit. Cette verification, faite
+    # ICI dans la couche donnees, protege tous les chemins d'insertion (GUI et
+    # import CSV) au meme niveau, comme _validate_date le fait deja pour les
+    # dates.
+    if not math.isfinite(amount):
+        raise ValueError(f"Montant invalide : {amount!r} (doit etre un nombre fini)")
 
 
 def _month_range_bounds(month: str) -> tuple:
@@ -340,6 +356,7 @@ class Database:
         category_id: Optional[int] = None, payee: str = "", memo: str = "", cleared: bool = False,
     ) -> int:
         _validate_date(date)
+        _validate_amount(amount)
         cur = self.conn.execute(
             """INSERT INTO transactions (account_id, category_id, date, payee, memo, amount, cleared, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -355,6 +372,8 @@ class Database:
             return
         if "date" in updates:
             _validate_date(updates["date"])
+        if "amount" in updates:
+            _validate_amount(float(updates["amount"]))
         should_clear_splits = "category_id" in updates
         if not should_clear_splits and "amount" in updates:
             # Un appelant peut renvoyer "amount" sans que sa valeur ait

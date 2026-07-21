@@ -1,6 +1,7 @@
 """Tests pour db.py : schema SQLite, CRUD comptes/categories/transactions,
 calcul du solde de compte, assignations budgetaires."""
 
+import math
 import sys
 import tempfile
 import unittest
@@ -152,6 +153,55 @@ class DatabaseTestCase(unittest.TestCase):
         account_id = self.db.add_account("A")
         with self.assertRaises(ValueError):
             self.db.add_recurring_transaction(account_id, "2026-02-30", -800.0, "monthly")
+
+    def test_add_transaction_rejects_infinite_amount(self):
+        # Trouve a l'audit : float("inf") passait tel quel (aucune
+        # verification de finitude), et contaminait irreversiblement
+        # account_balance/total_on_budget_balance/ready_to_assign (ils
+        # deviennent inf pour toute la base, sans aucune exception).
+        account_id = self.db.add_account("A")
+        with self.assertRaises(ValueError):
+            self.db.add_transaction(account_id, "2026-01-05", float("inf"))
+        with self.assertRaises(ValueError):
+            self.db.add_transaction(account_id, "2026-01-05", float("-inf"))
+        self.assertEqual(self.db.list_transactions(), [])  # aucune insertion silencieuse
+
+    def test_add_transaction_rejects_nan_amount(self):
+        # Trouve a l'audit : float("nan") est converti en NULL par sqlite3
+        # lors du binding, ce qui violait la contrainte NOT NULL de la
+        # colonne amount et levait une sqlite3.IntegrityError non geree.
+        account_id = self.db.add_account("A")
+        with self.assertRaises(ValueError):
+            self.db.add_transaction(account_id, "2026-01-05", float("nan"))
+        self.assertEqual(self.db.list_transactions(), [])
+
+    def test_update_transaction_rejects_non_finite_amount(self):
+        account_id = self.db.add_account("A")
+        transaction_id = self.db.add_transaction(account_id, "2026-01-05", -10.0)
+        with self.assertRaises(ValueError):
+            self.db.update_transaction(transaction_id, amount=float("inf"))
+        with self.assertRaises(ValueError):
+            self.db.update_transaction(transaction_id, amount=float("nan"))
+        # Le montant d'origine, valide, n'a pas ete alteree par la tentative.
+        self.assertEqual(self.db.get_transaction(transaction_id)["amount"], -10.0)
+
+    def test_balances_stay_intact_after_rejected_non_finite_amounts(self):
+        # Verrouille l'invariant reste-a-assigner (dont total_on_budget_balance
+        # et account_balance sont des composantes) : une tentative de saisie
+        # d'un montant infini/NaN, meme rejetee, ne doit laisser aucune trace
+        # de corruption sur les soldes agreges.
+        account_id = self.db.add_account("A", starting_balance=1000.0)
+        category_id = self.db.add_category("Epicerie")
+        self.db.set_budget_entry(category_id, "2026-01", 200.0)
+        balance_before = self.db.account_balance(account_id)
+        total_before = self.db.total_on_budget_balance()
+        for bad_amount in (float("inf"), float("-inf"), float("nan")):
+            with self.assertRaises(ValueError):
+                self.db.add_transaction(account_id, "2026-01-05", bad_amount, category_id=category_id)
+        self.assertEqual(self.db.account_balance(account_id), balance_before)
+        self.assertEqual(self.db.total_on_budget_balance(), total_before)
+        self.assertTrue(math.isfinite(self.db.account_balance(account_id)))
+        self.assertTrue(math.isfinite(self.db.total_on_budget_balance()))
 
     # -- backup_to (item 4 : sauvegarde/restauration) ------------------------
 

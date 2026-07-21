@@ -5,6 +5,7 @@ machine de l'utilisateur."""
 
 from __future__ import annotations
 
+import math
 import queue
 import sys
 import webbrowser
@@ -157,9 +158,18 @@ class EnveloppeApp:
     @staticmethod
     def _parse_float(text: str, field_label: str) -> float:
         try:
-            return float(text.strip().replace(",", ".") or 0)
+            value = float(text.strip().replace(",", ".") or 0)
         except ValueError:
             raise ValueError(f"{field_label} doit etre un nombre.")
+        # "inf", "-inf" et "nan" sont acceptes par float() sans lever
+        # d'exception, et corrompent irreversiblement les soldes (voir
+        # db._validate_amount) - rejetes ici deja, au niveau de la saisie,
+        # pour un message d'erreur clair au lieu de laisser planter le
+        # callback Tkinter plus loin (IntegrityError non geree pour nan,
+        # contamination silencieuse de tous les soldes pour inf).
+        if not math.isfinite(value):
+            raise ValueError(f"{field_label} doit etre un nombre fini.")
+        return value
 
     # -- onglet Comptes ---------------------------------------------------------
 
@@ -674,8 +684,8 @@ class EnveloppeApp:
                     continue
                 try:
                     amount = self._parse_float(row["amount_var"].get(), "Chaque part")
-                except ValueError:
-                    messagebox.showwarning(APP_TITLE, "Chaque part doit avoir un montant numerique.", parent=dialog)
+                except ValueError as exc:
+                    messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
                     return
                 splits.append({
                     "category_id": self._parse_id(row["category_var"].get()),
@@ -887,8 +897,8 @@ class EnveloppeApp:
             to_id = self._parse_id(to_var.get())
             try:
                 amount = self._parse_float(amount_var.get(), "Le montant")
-            except ValueError:
-                messagebox.showwarning(APP_TITLE, "Le montant doit etre un nombre.", parent=dialog)
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
                 return
             date_text = date_var.get().strip()
             try:

@@ -185,6 +185,47 @@ class GuiSmokeTestCase(unittest.TestCase):
         amounts = sorted(abs(tx["amount"]) for tx in transactions)
         self.assertEqual(amounts[-1], 25.5)
 
+    # -- correctif audit : montant infini/NaN saisi dans la GUI --------------
+
+    def test_entering_an_infinite_amount_in_the_transaction_form_shows_a_clear_warning_instead_of_crashing(self):
+        # Trouve a l'audit : float("inf") passait float() sans lever
+        # d'exception (contrairement a un texte non numerique), et aurait
+        # contamine irreversiblement account_balance/ready_to_assign. Ce test
+        # pilote la vraie saisie GUI (vrai StringVar, vrai bouton) pour
+        # verrouiller que la saisie est desormais rejetee avec un message
+        # clair, sans planter le callback ni inserer de transaction.
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        self.app.tx_account_var.set(f"{account_id} - Compte")
+        self.app.tx_date_var.set("2026-01-05")
+        self.app.tx_amount_var.set("inf")
+        before_count = len(self.app.db.list_transactions())
+
+        self.app._add_transaction()
+
+        self.mock_warning.assert_called_once()
+        warning_message = self.mock_warning.call_args[0][1]
+        self.assertIn("fini", warning_message)
+        self.assertEqual(len(self.app.db.list_transactions()), before_count)
+        self.assertEqual(self.app.db.account_balance(account_id), 1000.0)
+
+    def test_entering_a_nan_amount_in_the_transaction_form_shows_a_clear_warning_instead_of_crashing(self):
+        # Trouve a l'audit : float("nan") aurait viole la contrainte NOT NULL
+        # de la colonne amount (sqlite3 le convertit en NULL au binding) et
+        # leve une sqlite3.IntegrityError non geree dans le callback Tkinter.
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        self.app.tx_account_var.set(f"{account_id} - Compte")
+        self.app.tx_date_var.set("2026-01-05")
+        self.app.tx_amount_var.set("nan")
+        before_count = len(self.app.db.list_transactions())
+
+        self.app._add_transaction()  # ne doit pas lever d'exception
+
+        self.mock_warning.assert_called_once()
+        warning_message = self.mock_warning.call_args[0][1]
+        self.assertIn("fini", warning_message)
+        self.assertEqual(len(self.app.db.list_transactions()), before_count)
+        self.assertEqual(self.app.db.account_balance(account_id), 1000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

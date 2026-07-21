@@ -1,6 +1,7 @@
 """Tests pour csv_transactions.py : export/import CSV des transactions."""
 
 import csv
+import math
 import sys
 import tempfile
 import unittest
@@ -185,6 +186,39 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         self.assertEqual(result["imported"], 0)
         self.assertEqual(len(result["skipped"]), 1)
         self.assertEqual(self.db.list_transactions(), [])  # aucune insertion silencieuse
+
+    def test_infinite_amount_is_skipped_and_reported_without_aborting_the_whole_import(self):
+        # Trouve a l'audit : contrairement a un texte non numerique (deja
+        # gere par test_invalid_amount_is_skipped_and_reported...), float()
+        # accepte "inf"/"-inf" sans lever d'exception - une ligne CSV avec un
+        # tel montant aurait ete importee telle quelle et aurait contamine
+        # irreversiblement account_balance/total_on_budget_balance/
+        # ready_to_assign (ils deviennent inf pour toute la base).
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "", "", "", "inf", "Non"],
+            ["", "2026-01-06", "Compte courant", "", "", "", "-5.00", "Non"],
+        ])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("montant invalide", result["skipped"][0]["reason"])
+        self.assertEqual(len(self.db.list_transactions()), 1)
+        self.assertTrue(math.isfinite(self.db.account_balance(self.account_id)))
+
+    def test_nan_amount_is_skipped_and_reported_without_aborting_the_whole_import(self):
+        # Trouve a l'audit : float("nan") est converti en NULL par sqlite3
+        # lors du binding, violant la contrainte NOT NULL de la colonne
+        # amount - ce qui levait une sqlite3.IntegrityError non geree au
+        # milieu de la boucle d'import, interrompant tout le reste du CSV.
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "", "", "", "nan", "Non"],
+            ["", "2026-01-06", "Compte courant", "", "", "", "-5.00", "Non"],
+        ])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("montant invalide", result["skipped"][0]["reason"])
+        self.assertEqual(len(self.db.list_transactions()), 1)
 
     def test_cleared_column_accepts_oui_non_case_insensitively(self):
         path = self._write_csv([

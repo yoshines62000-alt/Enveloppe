@@ -5,6 +5,7 @@ d'un format bancaire proprietaire."""
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -118,6 +119,14 @@ def import_transactions_csv(
             amount = float((row.get("Montant") or "").replace(",", "."))
         except ValueError:
             skipped.append({"line": line_number, "reason": f"montant invalide : '{row.get('Montant', '')}'"})
+            continue
+        if not math.isfinite(amount):
+            # float() accepte "inf"/"nan" sans lever d'exception (contrairement
+            # a un texte non numerique, deja gere ci-dessus) - une ligne CSV
+            # important un montant infini ou NaN corromprait durablement les
+            # soldes (voir db._validate_amount) si elle n'etait pas rejetee
+            # ici, individuellement, comme les autres montants malformes.
+            skipped.append({"line": line_number, "reason": f"montant invalide : '{row.get('Montant', '')}' (doit etre un nombre fini)"})
             continue
 
         date = row.get("Date", "")
