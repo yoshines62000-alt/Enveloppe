@@ -42,6 +42,23 @@ def _category_cell(db, tx) -> str:
     return f"Fractionnee ({split_count}) : {detail}" if detail else f"Fractionnee ({split_count})"
 
 
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralise une cellule texte contre l'injection de formule CSV
+    (OWASP CSV Injection) : Excel/LibreOffice interpretent comme une formule
+    toute cellule commencant par =, +, - ou @ (ou une tabulation) a
+    l'ouverture du fichier - un beneficiaire ou memo importe depuis un CSV
+    externe non fiable (ou simplement mal saisi) pourrait ainsi executer du
+    code au lieu de s'afficher comme texte. Prefixer d'une apostrophe force
+    le tableur a traiter la cellule comme texte litteral tout en conservant
+    sa valeur lisible (l'apostrophe n'apparait pas a l'affichage)."""
+    if value and value.startswith(_CSV_FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
 def export_transactions_csv(transactions: list, output_path: Path, db=None) -> None:
     """transactions : lignes issues de Database.list_transactions() (avec
     account_name/category_name/split_count deja joints). `db` (optionnel) :
@@ -57,8 +74,8 @@ def export_transactions_csv(transactions: list, output_path: Path, db=None) -> N
         writer.writerow(CSV_HEADER)
         for tx in transactions:
             writer.writerow([
-                tx["id"], tx["date"], tx["account_name"], _category_cell(db, tx),
-                tx["payee"], tx["memo"], f"{tx['amount']:.2f}", "Oui" if tx["cleared"] else "Non",
+                tx["id"], tx["date"], _csv_safe(tx["account_name"]), _csv_safe(_category_cell(db, tx)),
+                _csv_safe(tx["payee"]), _csv_safe(tx["memo"]), f"{tx['amount']:.2f}", "Oui" if tx["cleared"] else "Non",
             ])
 
 

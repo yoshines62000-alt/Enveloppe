@@ -92,6 +92,41 @@ class ExportTransactionsCsvTestCase(unittest.TestCase):
             rows = list(csv.DictReader(f))
         self.assertEqual(rows[0]["Categorie"], "Epicerie")
 
+    def test_export_neutralizes_formula_injection_in_payee_and_memo(self):
+        # Trouve a l'audit : un beneficiaire ou memo importe depuis un CSV
+        # externe non fiable et commencant par =, +, - ou @ etait ecrit tel
+        # quel a l'export, produisant une formule executable en clair a
+        # l'ouverture dans Excel/LibreOffice (OWASP CSV Injection). Preuve
+        # empirique de l'audit : import de "=CMD('calc.exe')" comme
+        # beneficiaire, puis re-export, produisait exactement cette valeur
+        # en clair dans le fichier de sortie.
+        for trigger in ("=", "+", "-", "@"):
+            with self.subTest(trigger=trigger):
+                self.db.add_transaction(
+                    self.account_id, "2026-01-05", -10.0, category_id=self.category_id,
+                    payee=f"{trigger}CMD('calc.exe')", memo=f"{trigger}HYPERLINK(\"http://evil\")",
+                )
+                output = self.tmp / f"export_{ord(trigger)}.csv"
+                export_transactions_csv(self.db.list_transactions(), output)
+                with open(output, "r", encoding="utf-8-sig") as f:
+                    rows = list(csv.DictReader(f))
+                row = rows[-1]
+                self.assertTrue(row["Beneficiaire"].startswith("'" + trigger))
+                self.assertTrue(row["Memo"].startswith("'" + trigger))
+                self.assertEqual(row["Beneficiaire"], f"'{trigger}CMD('calc.exe')")
+
+    def test_export_does_not_alter_an_ordinary_payee_or_memo(self):
+        self.db.add_transaction(
+            self.account_id, "2026-01-05", -10.0, category_id=self.category_id,
+            payee="Supermarche du coin", memo="Courses hebdomadaires",
+        )
+        output = self.tmp / "export.csv"
+        export_transactions_csv(self.db.list_transactions(), output)
+        with open(output, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.DictReader(f))
+        self.assertEqual(rows[0]["Beneficiaire"], "Supermarche du coin")
+        self.assertEqual(rows[0]["Memo"], "Courses hebdomadaires")
+
 
 class ImportTransactionsCsvTestCase(unittest.TestCase):
     def setUp(self):
