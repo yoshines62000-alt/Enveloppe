@@ -23,7 +23,7 @@ from db import Database
 
 APP_TITLE = "Enveloppe"
 DONATE_URL = "https://ko-fi.com/yoshines62000"
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 UPDATE_REPO = "yoshines62000-alt/Enveloppe"
 RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 
