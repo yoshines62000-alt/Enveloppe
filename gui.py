@@ -5,6 +5,7 @@ machine de l'utilisateur."""
 
 from __future__ import annotations
 
+import ctypes
 import math
 import queue
 import sys
@@ -32,6 +33,63 @@ def _resource_path(relative: str) -> Path:
 
 def _data_dir() -> Path:
     return Path.home() / "AppData" / "Roaming" / "Enveloppe"
+
+
+_dpi_awareness_configured = False
+
+
+def _configure_dpi_awareness() -> None:
+    """Rend le processus explicitement "Per-Monitor V2 DPI Aware" AVANT
+    toute creation de fenetre Tk (audit D30) : sans manifeste ni appel
+    explicite, un executable PyInstaller n'est, par defaut, PAS declare
+    sensible au DPI - Windows le traite alors comme "DPI-unaware" et
+    applique un lissage bitmap a toute l'application des qu'un facteur
+    d'echelle superieur a 100% est actif (125%/150%/200%, tres courant sur
+    portables/ecrans modernes), produisant un rendu visiblement flou du
+    texte et des icones.
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (-4) est disponible depuis
+    Windows 10 1703 ; repli sur les API plus anciennes (Windows 8.1 puis
+    Vista) pour rester fonctionnel sur un systeme plus ancien.
+    Complementaire du manifeste embarque dans l'executable PyInstaller
+    (Enveloppe.manifest, reference par Enveloppe.spec) qui couvre le meme
+    besoin AVANT meme que Python ne demarre - le manifeste est la methode
+    recommandee par Microsoft pour un executable natif ; cet appel ctypes
+    reste un filet de securite actif meme lance depuis le code source
+    (`python gui.py`, sans passer par l'exe empaquete). Meme pattern deja
+    applique et verifie sur le projet GuideExpress.
+    Idempotent (protege par `_dpi_awareness_configured`) : applique au
+    moment de l'import du module, avant que main() ou un test ne puisse
+    construire la premiere fenetre Tk() - un appel APRES la creation de la
+    premiere fenetre Tk n'aurait aucun effet (la sensibilite DPI d'un
+    processus Windows ne peut etre definie qu'une seule fois, avant toute
+    fenetre)."""
+    global _dpi_awareness_configured
+    if _dpi_awareness_configured or sys.platform != "win32":
+        return
+    try:
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+            _dpi_awareness_configured = True
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        PROCESS_PER_MONITOR_DPI_AWARE = 2
+        if ctypes.windll.shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) == 0:
+            _dpi_awareness_configured = True
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass  # echec silencieux : au pire, comportement pre-correctif (non DPI-aware) - jamais bloquant pour le reste de l'app
+    _dpi_awareness_configured = True
+
+
+# Applique au moment de l'import du module, avant que __main__ ou un test ne
+# construise la premiere fenetre Tk() - voir la docstring de la fonction.
+_configure_dpi_awareness()
 
 
 class EnveloppeApp:
@@ -161,6 +219,32 @@ class EnveloppeApp:
         categories = self.db.list_categories()
         return categories, [f"{c['id']} - {c['name']}" for c in categories]
 
+    def _move_dialog_category_choices(self):
+        """Categories proposees dans le dialogue "Deplacer entre
+        enveloppes..." (audit D1) : les categories actives, PLUS toute
+        categorie archivee qui a encore un solde non nul ce mois-ci (meme
+        logique que _refresh_budget/archived_with_balance). Sans ceci,
+        l'argent range dans une categorie archivee restait visible dans
+        l'onglet Budget (grisee, suffixe "(archivee)") mais totalement
+        bloque : impossible de le deplacer sans d'abord desarchiver la
+        categorie dans l'onglet Categories, la deplacer, puis eventuellement
+        la re-archiver - un detour non documente nulle part dans l'IHM.
+        Les deux sens (source ET destination) beneficient de la meme liste,
+        le suffixe "(archivee)" restant affiche pour que le choix soit
+        explicite plutot que silencieux."""
+        active_categories = self.db.list_categories(include_archived=False)
+        active_ids = {c["id"] for c in active_categories}
+        archived_with_balance = [
+            c for c in self.db.list_categories(include_archived=True)
+            if c["id"] not in active_ids and bg.category_available(self.db, c["id"], self.current_month) != 0
+        ]
+        categories = active_categories + archived_with_balance
+        labels = [
+            f"{c['id']} - {c['name']}" + (" (archivee)" if c["id"] not in active_ids else "")
+            for c in categories
+        ]
+        return categories, labels
+
     @staticmethod
     def _parse_id(combo_value: str):
         if not combo_value:
@@ -182,6 +266,56 @@ class EnveloppeApp:
         if not math.isfinite(value):
             raise ValueError(f"{field_label} doit etre un nombre fini.")
         return value
+
+    def _open_amount_edit_dialog(self, prompt: str, initial_value, on_save):
+        """Boite de saisie d'un montant, maison (Toplevel + Entry +
+        _parse_float) - remplace tkinter.simpledialog.askfloat (audit
+        D31/D32). askfloat s'appuie en interne sur self.tk.getdouble(), qui
+        REJETTE la virgule comme separateur decimal francais ('12,50' leve
+        TclError, alors que '12.50' passe) - incoherent avec _parse_float(),
+        deja utilise partout ailleurs dans l'application (formulaires de
+        transaction, fractionnement, virement...) pour accepter les deux.
+        Ses messages d'erreur natifs sont aussi codes en dur en anglais
+        ("Not a floating-point value. Please try again"), rompant la
+        coherence 100% francaise du reste de l'IHM (D32) - remplaces ici par
+        les messages de _parse_float, affiches via messagebox.showwarning
+        comme partout ailleurs dans l'application.
+
+        `on_save(value: float)` est appele avec le montant valide des que
+        l'utilisateur confirme (bouton "Enregistrer" ou touche Entree) ; le
+        dialogue se ferme alors automatiquement. Rien n'est appele si
+        l'utilisateur annule (bouton "Annuler" ou fermeture de la fenetre)."""
+        from tkinter import Toplevel
+
+        dialog = Toplevel(self.root)
+        dialog.title(APP_TITLE)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text=prompt, wraplength=320, justify="left").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(10, 5),
+        )
+        value_var = StringVar(value=str(initial_value) if initial_value else "0")
+        entry = ttk.Entry(dialog, textvariable=value_var, width=15)
+        entry.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 5))
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        def on_confirm(event=None):
+            try:
+                value = self._parse_float(value_var.get(), "Le montant")
+            except ValueError as exc:
+                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                return
+            dialog.destroy()
+            on_save(value)
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, pady=10)
+        ttk.Button(buttons, text="Enregistrer", command=on_confirm).pack(side=LEFT, padx=5)
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+        entry.bind("<Return>", on_confirm)
 
     # -- onglet Comptes ---------------------------------------------------------
 
@@ -349,16 +483,15 @@ class EnveloppeApp:
         category_id = int(selection[0])
         category = self.db.get_category(category_id)
 
-        from tkinter import simpledialog
-        new_value = simpledialog.askfloat(
-            APP_TITLE, "Objectif d'epargne (laisser vide ou 0 pour aucun objectif) :",
-            initialvalue=category["savings_goal"] or 0.0, parent=self.root,
+        def on_save(new_value):
+            self.db.update_category(category_id, savings_goal=new_value if new_value > 0 else None)
+            self._refresh_categories()
+            self._refresh_budget()
+
+        self._open_amount_edit_dialog(
+            "Objectif d'epargne (laisser vide ou 0 pour aucun objectif) :",
+            category["savings_goal"] or 0.0, on_save,
         )
-        if new_value is None:
-            return
-        self.db.update_category(category_id, savings_goal=new_value if new_value > 0 else None)
-        self._refresh_categories()
-        self._refresh_budget()
 
     # -- onglet Budget ------------------------------------------------------------
 
@@ -494,15 +627,16 @@ class EnveloppeApp:
             messagebox.showinfo(APP_TITLE, "Rien a copier : aucune assignation trouvee le mois precedent, ou tout est deja assigne ce mois-ci.")
 
     def _open_move_between_envelopes_dialog(self):
-        categories, category_labels = self._category_choices()
+        categories, category_labels = self._move_dialog_category_choices()
         if len(categories) < 2:
             messagebox.showwarning(APP_TITLE, "Il faut au moins deux categories pour deplacer de l'argent.")
             return
 
         # Pre-selectionne la categorie de la ligne choisie dans le tableau,
-        # si elle est encore active : une ligne archivee peut apparaitre
-        # dans le budget (solde restant) mais n'est plus proposee pour de
-        # nouveaux mouvements, comme pour toute nouvelle saisie.
+        # y compris si elle est archivee (audit D1) : une ligne archivee a
+        # solde non nul apparait dans _move_dialog_category_choices() comme
+        # n'importe quelle autre, donc peut etre pre-selectionnee de la
+        # meme facon.
         selection = self.budget_tree.selection()
         default_from = category_labels[0]
         if selection:
@@ -565,15 +699,14 @@ class EnveloppeApp:
         category = self.db.get_category(category_id)
         current = self.db.get_budget_entry(category_id, self.current_month)
 
-        from tkinter import simpledialog
-        new_value = simpledialog.askfloat(
-            APP_TITLE, f"Montant budgete pour '{category['name']}' en {bg.month_label(self.current_month)} :",
-            initialvalue=current, parent=self.root,
+        def on_save(new_value):
+            self.db.set_budget_entry(category_id, self.current_month, round(new_value, 2))
+            self._refresh_budget()
+
+        self._open_amount_edit_dialog(
+            f"Montant budgete pour '{category['name']}' en {bg.month_label(self.current_month)} :",
+            current, on_save,
         )
-        if new_value is None:
-            return
-        self.db.set_budget_entry(category_id, self.current_month, round(new_value, 2))
-        self._refresh_budget()
 
     # -- onglet Transactions --------------------------------------------------------
 
@@ -1377,7 +1510,10 @@ class EnveloppeApp:
         months = overview["months"]
         self.annual_year_var.set(str(self.annual_year))
 
-        short_labels = [bg.month_label(m).split(" ")[0][:3] for m in months]
+        # bg.month_abbreviation (pas une troncature naive du libelle complet)
+        # : audit D27, "Juin" et "Juillet" tronquaient auparavant tous deux
+        # en "Jui", rendant les deux colonnes indiscernables.
+        short_labels = [bg.month_abbreviation(m) for m in months]
         columns = ("category",) + tuple(months) + ("total",)
         self.annual_tree["columns"] = columns
         self.annual_tree.heading("category", text="Categorie")

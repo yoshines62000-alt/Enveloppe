@@ -57,6 +57,29 @@ def month_label(month: str) -> str:
     return f"{names[mon - 1]} {year}"
 
 
+# Abreviations explicites (audit D27) : la Vue annuelle utilisait auparavant
+# une troncature naive du libelle complet a 3 caracteres
+# (month_label(m).split(" ")[0][:3]), qui produit "Jui" aussi bien pour
+# "Juin" que pour "Juillet" - les deux colonnes devenaient indiscernables au
+# premier regard dans les en-tetes du tableau. Cette table garantit que les
+# 12 abreviations sont toutes distinctes, une fois pour toutes.
+_MONTH_ABBREVIATIONS = [
+    "Jan", "Fev", "Mar", "Avr", "Mai", "Juin",
+    "Juil", "Aou", "Sep", "Oct", "Nov", "Dec",
+]
+
+
+def month_abbreviation(month: str) -> str:
+    """Abreviation courte et sans collision du mois 'YYYY-MM' (voir
+    _MONTH_ABBREVIATIONS ci-dessus), utilisee pour les en-tetes de colonnes
+    compactes de la Vue annuelle."""
+    match = _MONTH_RE.match(month)
+    if not match:
+        raise ValueError(f"Format de mois invalide : {month!r} (attendu YYYY-MM)")
+    mon = int(match.group(2))
+    return _MONTH_ABBREVIATIONS[mon - 1]
+
+
 def category_available(db, category_id: int, month: str) -> float:
     """Solde disponible de l'enveloppe a la fin du mois donne (cumul depuis
     toujours : assignations - depenses, report inclus)."""

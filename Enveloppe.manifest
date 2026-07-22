@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Manifeste d'application embarque dans Enveloppe.exe par PyInstaller (voir
+  Enveloppe.spec, parametre manifest=).
+
+  Corrige la trouvaille d'audit D30 (absence de manifeste DPI-aware) : sans
+  lui, l'executable n'est, par defaut, pas declare sensible au DPI, et
+  Windows applique un lissage bitmap a toute l'application des qu'un facteur
+  d'echelle different de 100% (125%/150%/200%, tres courant sur portables et
+  ecrans modernes) est actif - rendu visiblement flou du texte et des icones.
+
+  PerMonitorV2 (dpiAwareness) + repli "true/pm" (dpiAware, pour Windows <
+  1703) couvrent la meme intention que l'appel ctypes explicite fait au
+  demarrage de gui.py (_configure_dpi_awareness) - c'est la methode
+  recommandee par Microsoft pour un executable natif : elle prend effet des
+  le chargement du processus par le systeme, avant meme que l'interpreteur
+  Python n'ait demarre, contrairement a l'appel ctypes qui ne peut agir
+  qu'apres l'import de gui.py. Meme pattern deja applique et verifie sur le
+  projet GuideExpress.
+
+  requestedExecutionLevel="asInvoker" : ne demande AUCUNE elevation
+  (Enveloppe n'a jamais eu besoin de droits administrateur - simple
+  application locale lisant/ecrivant un fichier SQLite dans le profil de
+  l'utilisateur courant). Fourni explicitement pour eviter toute heuristique
+  d'installateur de Windows (declenchee par certains noms de fichier) qui
+  pourrait sinon s'appliquer en l'absence de manifeste.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <asmv3:application>
+    <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+      <dpiAware>true/pm</dpiAware>
+    </asmv3:windowsSettings>
+    <asmv3:windowsSettings xmlns:ws2016="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <ws2016:dpiAwareness>PerMonitorV2</ws2016:dpiAwareness>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}" />
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>

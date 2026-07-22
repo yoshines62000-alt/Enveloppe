@@ -36,4 +36,13 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['icon.ico'],
+    # Manifeste DPI-aware (audit D30) : voir Enveloppe.manifest pour le
+    # detail et la justification complete. Sans lui, l'executable empaquete
+    # n'est pas declare sensible au DPI et Windows applique un lissage
+    # bitmap a tout le rendu des qu'un facteur d'echelle different de 100%
+    # est actif (tres courant sur portables et ecrans modernes).
+    # Complementaire de l'appel ctypes equivalent fait au demarrage de
+    # gui.py (_configure_dpi_awareness), qui reste un filet de securite pour
+    # une execution depuis le code source (non empaquetee).
+    manifest='Enveloppe.manifest',
 )

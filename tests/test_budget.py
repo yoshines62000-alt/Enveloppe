@@ -49,6 +49,33 @@ class MonthHelpersTestCase(unittest.TestCase):
             bg.shift_month("2026-00", 1)
 
 
+class MonthAbbreviationTestCase(unittest.TestCase):
+    """Audit D27 : month_abbreviation() remplace une troncature naive du
+    libelle complet (month_label(m).split(" ")[0][:3]) qui produisait "Jui"
+    aussi bien pour "Juin" que pour "Juillet" dans les en-tetes de colonnes
+    de la Vue annuelle, rendant les deux mois indiscernables au premier
+    regard."""
+
+    def test_june_and_july_no_longer_collide(self):
+        self.assertNotEqual(bg.month_abbreviation("2026-06"), bg.month_abbreviation("2026-07"))
+        self.assertEqual(bg.month_abbreviation("2026-06"), "Juin")
+        self.assertEqual(bg.month_abbreviation("2026-07"), "Juil")
+
+    def test_all_twelve_months_have_distinct_abbreviations(self):
+        abbreviations = [bg.month_abbreviation(f"2026-{m:02d}") for m in range(1, 13)]
+        self.assertEqual(len(abbreviations), len(set(abbreviations)), abbreviations)
+
+    def test_rejects_month_out_of_range(self):
+        with self.assertRaises(ValueError):
+            bg.month_abbreviation("2026-13")
+        with self.assertRaises(ValueError):
+            bg.month_abbreviation("2026-00")
+
+    def test_rejects_invalid_format(self):
+        with self.assertRaises(ValueError):
+            bg.month_abbreviation("not-a-month")
+
+
 class CategoryAvailableTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import budget as bg
 import gui
 
 
@@ -535,6 +536,182 @@ class GuiSmokeTestCase(unittest.TestCase):
         message = self.mock_info.call_args[0][1]
         self.assertIn("2 transaction(s) importee(s)", message)
         self.assertEqual(len(self.app.db.list_transactions()), 2)
+
+    # -- audit D1 : categorie archivee a solde non nul, deplacable sans
+    # desarchiver au prealable ------------------------------------------
+
+    def test_move_between_envelopes_dialog_lists_an_archived_category_with_a_balance(self):
+        # Trouve a l'audit : une categorie archivee avec un solde restant
+        # etait bien visible (grisee, suffixe "(archivee)") dans l'onglet
+        # Budget, mais totalement absente du dialogue "Deplacer entre
+        # enveloppes..." (_category_choices() ne renvoyait que les
+        # categories actives) - impossible d'en extraire l'argent sans
+        # d'abord la desarchiver dans l'onglet Categories.
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        self.app.db.add_category("Loisirs")
+        old_project_id = self.app.db.add_category("Ancien projet")
+        self.app.db.set_budget_entry(old_project_id, self.app.current_month, 260.0)
+        self.app.db.update_category(old_project_id, archived=1)
+        self.app._refresh_budget()
+
+        dialog = self._new_dialog(self.app._open_move_between_envelopes_dialog)
+        try:
+            combos = _collect_widgets(dialog, "TCombobox")
+            self.assertEqual(len(combos), 2, "source et destination attendues")
+            expected_label = f"{old_project_id} - Ancien projet (archivee)"
+            for combo in combos:
+                self.assertIn(
+                    expected_label, combo.cget("values"),
+                    "la categorie archivee a solde non nul doit rester choisissable",
+                )
+        finally:
+            dialog.destroy()
+
+    def test_moving_money_out_of_an_archived_category_via_the_dialog_actually_works(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        fun_id = self.app.db.add_category("Loisirs")
+        old_project_id = self.app.db.add_category("Ancien projet")
+        self.app.db.set_budget_entry(old_project_id, self.app.current_month, 260.0)
+        self.app.db.update_category(old_project_id, archived=1)
+        self.app._refresh_budget()
+
+        dialog = self._new_dialog(self.app._open_move_between_envelopes_dialog)
+        try:
+            from_combo, to_combo = _collect_widgets(dialog, "TCombobox")
+            from_combo.set(f"{old_project_id} - Ancien projet (archivee)")
+            to_combo.set(f"{fun_id} - Loisirs")
+            amount_entry = _collect_widgets(dialog, "TEntry")[0]
+            _set_entry(amount_entry, "100")
+            _click_button(dialog, "Deplacer")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(bg.category_available(self.app.db, old_project_id, self.app.current_month), 160.0)
+        self.assertEqual(bg.category_available(self.app.db, fun_id, self.app.current_month), 100.0)
+
+    def test_move_between_envelopes_dialog_does_not_list_an_archived_category_with_a_zero_balance(self):
+        # Une categorie archivee sans aucun solde restant n'a rien a
+        # deplacer - elle continue de ne pas apparaitre, meme comportement
+        # que l'onglet Budget (archived_with_balance).
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        self.app.db.add_category("Loisirs")
+        self.app.db.add_category("Epicerie")
+        empty_id = self.app.db.add_category("Categorie vide")
+        self.app.db.update_category(empty_id, archived=1)
+        self.app._refresh_budget()
+
+        dialog = self._new_dialog(self.app._open_move_between_envelopes_dialog)
+        try:
+            combos = _collect_widgets(dialog, "TCombobox")
+            unexpected_label = f"{empty_id} - Categorie vide (archivee)"
+            for combo in combos:
+                self.assertNotIn(unexpected_label, combo.cget("values"))
+        finally:
+            dialog.destroy()
+
+    # -- audit D27 : abreviations de mois sans collision (Vue annuelle) -----
+
+    def test_annual_view_headers_for_june_and_july_are_distinct(self):
+        # Trouve a l'audit : les en-tetes de colonnes mensuelles tronquaient
+        # naivement le libelle complet a 3 caracteres, produisant "Jui" pour
+        # Juin ET pour Juillet - les deux colonnes etaient indiscernables.
+        self.app.annual_year = 2026
+        self.app._refresh_annual()
+        june_heading = self.app.annual_tree.heading("2026-06")["text"]
+        july_heading = self.app.annual_tree.heading("2026-07")["text"]
+        self.assertNotEqual(june_heading, july_heading)
+        self.assertEqual(june_heading, "Juin")
+        self.assertEqual(july_heading, "Juil")
+
+    # -- audit D31/D32 : dialogues de saisie de montant, virgule francaise --
+    #
+    # simpledialog.askfloat s'appuyait en interne sur self.tk.getdouble(),
+    # qui REJETTE la virgule comme separateur decimal francais ('12,50' ->
+    # TclError), incoherent avec _parse_float() utilise partout ailleurs
+    # dans l'application. Remplace par _open_amount_edit_dialog (Toplevel
+    # maison + _parse_float), qui accepte aussi bien la virgule que le
+    # point, et affiche ses erreurs en francais au lieu du message natif Tk
+    # en anglais ("Not a floating-point value...").
+
+    def test_edit_budget_entry_dialog_accepts_french_decimal_comma_amounts(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_id = self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(self.app._edit_budget_entry)
+        try:
+            entry = _collect_widgets(dialog, "TEntry")[0]
+            _set_entry(entry, "150,25")
+            _click_button(dialog, "Enregistrer")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(self.app.db.get_budget_entry(cat_id, self.app.current_month), 150.25)
+
+    def test_edit_budget_entry_dialog_rejects_invalid_input_with_a_french_message(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_id = self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(self.app._edit_budget_entry)
+        try:
+            entry = _collect_widgets(dialog, "TEntry")[0]
+            _set_entry(entry, "pas un nombre")
+            _click_button(dialog, "Enregistrer")
+            self.mock_warning.assert_called_once()
+            message = self.mock_warning.call_args[0][1]
+            self.assertIn("nombre", message)
+            self.assertNotIn("Illegal value", message)
+            self.assertTrue(dialog.winfo_exists(), "le dialogue doit rester ouvert apres une saisie invalide")
+        finally:
+            dialog.destroy()
+
+    def test_edit_category_goal_dialog_accepts_french_decimal_comma_amounts(self):
+        cat_id = self.app.db.add_category("Vacances")
+        self.app._refresh_categories()
+        self.app.categories_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(self.app._edit_category_goal)
+        try:
+            entry = _collect_widgets(dialog, "TEntry")[0]
+            _set_entry(entry, "500,50")
+            _click_button(dialog, "Enregistrer")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(self.app.db.get_category(cat_id)["savings_goal"], 500.5)
+
+
+class DpiAwarenessTestCase(unittest.TestCase):
+    """Audit D30 : le processus doit etre rendu explicitement Per-Monitor V2
+    DPI Aware avant toute fenetre Tk, pour eviter un rendu flou sur les
+    ecrans a mise a l'echelle superieure a 100% (125%/150%/200%, tres
+    courant sur portables/ecrans modernes). Meme pattern deja applique et
+    verifie sur le projet GuideExpress."""
+
+    def test_configure_dpi_awareness_is_idempotent_and_does_not_raise(self):
+        # Deja appele une fois a l'import de gui.py (niveau module) : un
+        # second appel explicite ne doit rien refaire ni lever.
+        gui._configure_dpi_awareness()
+        gui._configure_dpi_awareness()
+        self.assertTrue(gui._dpi_awareness_configured)
+
+    @unittest.skipUnless(sys.platform == "win32", "verification specifique a l'API Win32")
+    def test_process_is_actually_per_monitor_v2_dpi_aware_on_windows(self):
+        import ctypes
+        gui._configure_dpi_awareness()
+        user32 = ctypes.windll.user32
+        if not hasattr(user32, "GetThreadDpiAwarenessContext"):
+            self.skipTest("GetThreadDpiAwarenessContext indisponible sur ce Windows (trop ancien)")
+        current_context = user32.GetThreadDpiAwarenessContext()
+        per_monitor_v2 = ctypes.c_void_p(-4)
+        is_pm_v2 = bool(user32.AreDpiAwarenessContextsEqual(current_context, per_monitor_v2))
+        self.assertTrue(is_pm_v2, "le processus devrait etre Per-Monitor V2 DPI Aware apres _configure_dpi_awareness()")
 
 
 if __name__ == "__main__":
