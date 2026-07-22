@@ -112,8 +112,24 @@ def ready_to_assign(db, month: Optional[str] = None) -> float:
     reste a assigner sans qu'aucun argent n'ait reellement bouge."""
     month = month or current_month()
     categories = db.list_categories(include_archived=True)
-    total_in_envelopes = sum(category_available(db, cat["id"], month) for cat in categories)
-    return round(db.total_on_budget_balance() - total_in_envelopes, 2)
+    available_by_category = {cat["id"]: category_available(db, cat["id"], month) for cat in categories}
+    return ready_to_assign_from_available(db, available_by_category)
+
+
+def ready_to_assign_from_available(db, available_by_category: dict) -> float:
+    """Meme formule que ready_to_assign, mais a partir d'un dictionnaire
+    {category_id: disponible} DEJA calcule par l'appelant pour TOUTES les
+    categories (actives et archivees) - audit D40 : gui._refresh_budget
+    calcule deja category_available() pour chaque categorie afin d'afficher
+    le tableau Budget ; lui faire rappeler ready_to_assign() (qui refait
+    exactement le meme calcul en interne) revenait a recalculer deux fois
+    par categorie, plus une troisieme fois dans _refresh_overspent_summary -
+    jusqu'a 3 appels a category_available (6 requetes SQL) par categorie et
+    par rafraichissement au lieu d'un seul (2 requetes). Cette variante
+    permet de reutiliser un dictionnaire deja pret plutot que de le
+    reconstruire ; ready_to_assign() ci-dessus reste l'API a utiliser quand
+    aucun dictionnaire n'est deja disponible."""
+    return round(db.total_on_budget_balance() - sum(available_by_category.values()), 2)
 
 
 def move_between_envelopes(db, from_category_id: int, to_category_id: int, month: str, amount: float) -> None:

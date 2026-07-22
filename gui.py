@@ -6,6 +6,7 @@ machine de l'utilisateur."""
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import queue
 import sys
@@ -13,6 +14,7 @@ import threading
 import webbrowser
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
+from typing import Optional
 
 import budget as bg
 import update_checker
@@ -186,6 +188,13 @@ class EnveloppeApp:
         self._refresh_annual()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Avertit si un import CSV precedent a ete interrompu brutalement
+        # (audit D44) avant de generer les transactions recurrentes -
+        # differe via after() comme _auto_generate_recurring juste en
+        # dessous, pour laisser la fenetre principale s'afficher d'abord
+        # plutot que de faire apparaitre une boite de dialogue avant meme
+        # que la fenetre ne soit peinte a l'ecran.
+        self.root.after(100, self._check_stale_csv_import_marker)
         # Genere les transactions recurrentes dues avant que l'utilisateur ne
         # commence a consulter ses comptes, pour que les soldes affiches des
         # l'ouverture soient deja a jour. Differe via after() (pas
@@ -266,6 +275,38 @@ class EnveloppeApp:
         if not math.isfinite(value):
             raise ValueError(f"{field_label} doit etre un nombre fini.")
         return value
+
+    @staticmethod
+    def _parse_iso_date(text: str) -> str:
+        """Valide qu'une date saisie est bien au format AAAA-MM-JJ (ISO) et
+        renvoie le texte tel quel (deja strip()e) si valide, ou leve
+        ValueError avec un message pret a afficher sinon. Factorise un motif
+        auparavant duplique a l'identique dans _add_transaction,
+        _edit_transaction (dialogue "on_save") et _add_recurring (audit
+        D59) : un futur correctif touchant la validation de date (ex :
+        accepter aussi JJ/MM/AAAA comme le fait deja l'import CSV, voir
+        csv_transactions._parse_csv_date) n'aurait sinon besoin d'etre
+        applique qu'a un seul endroit, plutot que de risquer d'en oublier un
+        - risque deja materialise par D31/D32 (deux dialogues distincts
+        avaient echappe a une correction similaire sur la virgule
+        decimale)."""
+        text = text.strip()
+        from datetime import date as _date
+        try:
+            _date.fromisoformat(text)
+        except ValueError:
+            raise ValueError("La date doit etre au format AAAA-MM-JJ.")
+        return text
+
+    def _parse_nonzero_amount(self, text: str, field_label: str = "Le montant") -> float:
+        """_parse_float() suivi du rejet d'un montant nul (une transaction,
+        une recurrence... de montant 0 n'a pas de sens metier) - meme motif
+        de factorisation que _parse_iso_date ci-dessus (audit D59), pour le
+        second demi-pattern duplique dans les memes trois methodes."""
+        amount = self._parse_float(text, field_label)
+        if amount == 0:
+            raise ValueError(f"{field_label} ne peut pas etre nul.")
+        return amount
 
     def _open_amount_edit_dialog(self, prompt: str, initial_value, on_save):
         """Boite de saisie d'un montant, maison (Toplevel + Entry +
@@ -361,7 +402,7 @@ class EnveloppeApp:
             ("archived", "Archive", 70),
         ]:
             self.accounts_tree.heading(col, text=label)
-            self.accounts_tree.column(col, width=width, anchor="w")
+            self.accounts_tree.column(col, width=width, anchor="w", stretch=True)
         # Meme convention de coloration que le tableau Budget (tag
         # "overspent", _build_budget_tab) pour un compte a decouvert (audit
         # D37) : un solde negatif y est deja mis en evidence en rouge, mais
@@ -370,6 +411,21 @@ class EnveloppeApp:
         # meme style neutre qu'un solde positif, sans signal visuel.
         self.accounts_tree.tag_configure("negative", foreground="#B00020")
         self.accounts_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+
+        # Ligne de total agrege (audit D5) : jusqu'ici, aucun total n'etait
+        # jamais affiche dans cet onglet - la seule facon de verifier que la
+        # somme des soldes de comptes correspondait bien a ce qu'on
+        # attendait etait de les additionner mentalement, ou de se fier au
+        # "Reste a assigner" de l'onglet Budget (qui n'est meme pas etiquete
+        # comme "total des comptes"). Inclut les comptes archives (meme
+        # perimetre que total_on_budget_balance/account_cleared_balance
+        # somme sur list_accounts(include_archived=True)) : archiver un
+        # compte ne fait jamais disparaitre l'argent qu'il contient
+        # reellement du total, memes motifs que D1/D2/D3.
+        self.accounts_total_var = StringVar()
+        total_row = ttk.Frame(frame)
+        total_row.pack(fill=X, padx=10, pady=(0, 5))
+        ttk.Label(total_row, textvariable=self.accounts_total_var, font=("Segoe UI", 10, "bold")).pack(side=RIGHT)
 
         actions = ttk.Frame(frame)
         actions.pack(fill=X, padx=10, pady=(0, 10))
@@ -395,14 +451,23 @@ class EnveloppeApp:
 
     def _refresh_accounts(self):
         self.accounts_tree.delete(*self.accounts_tree.get_children())
+        total_balance = 0.0
+        total_cleared = 0.0
         for account in self.db.list_accounts(include_archived=True):
             balance = self.db.account_balance(account["id"])
+            cleared_balance = self.db.account_cleared_balance(account["id"])
+            total_balance += balance
+            total_cleared += cleared_balance
             self.accounts_tree.insert("", END, iid=str(account["id"]), values=(
                 account["id"], account["name"], account["type"],
                 bg.format_amount(balance),
-                bg.format_amount(self.db.account_cleared_balance(account["id"])),
+                bg.format_amount(cleared_balance),
                 "Oui" if account["archived"] else "Non",
             ), tags=("negative",) if balance < 0 else ())
+        self.accounts_total_var.set(
+            f"Total : {bg.format_amount(round(total_balance, 2))} "
+            f"(pointe : {bg.format_amount(round(total_cleared, 2))})"
+        )
         self._refresh_transaction_account_choices()
 
     def _toggle_account_archived(self):
@@ -450,7 +515,7 @@ class EnveloppeApp:
             ("goal", "Objectif d'epargne", 130), ("archived", "Archive", 70),
         ]:
             self.categories_tree.heading(col, text=label)
-            self.categories_tree.column(col, width=width, anchor="w")
+            self.categories_tree.column(col, width=width, anchor="w", stretch=True)
         self.categories_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
         self.categories_tree.bind("<Double-1>", self._edit_category_goal)
 
@@ -560,13 +625,24 @@ class EnveloppeApp:
 
         columns = ("group", "category", "budgeted", "activity", "available", "goal_progress")
         self.budget_tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
+        # Categorie elargie a 220px (au lieu de 180) : le suffixe " (archivee)"
+        # ajoute automatiquement au nom d'une categorie archivee a solde non
+        # nul (voir archived_with_balance) allonge le libelle affiche, qui se
+        # tronquait visuellement pour un nom de categorie deja un peu long
+        # (audit D28 - ex : "Ancien projet (vacances 2023) (archiv...").
+        # stretch=True explicite sur toutes les colonnes (audit D29) : deja
+        # la valeur par defaut de ttk.Treeview, mais le rendre explicite
+        # documente l'intention (repartition proportionnelle de l'espace
+        # excedentaire entre colonnes plutot qu'une bande vide a droite du
+        # tableau sur un grand ecran) independamment d'un futur changement
+        # de comportement par defaut de Tk.
         for col, label, width in [
-            ("group", "Groupe", 140), ("category", "Categorie", 180), ("budgeted", "Budgete", 110),
+            ("group", "Groupe", 140), ("category", "Categorie", 220), ("budgeted", "Budgete", 110),
             ("activity", "Activite (ce mois)", 130), ("available", "Disponible", 110),
             ("goal_progress", "Objectif d'epargne", 150),
         ]:
             self.budget_tree.heading(col, text=label)
-            self.budget_tree.column(col, width=width, anchor="w")
+            self.budget_tree.column(col, width=width, anchor="w", stretch=True)
         self.budget_tree.tag_configure("overspent", foreground="#B00020")
         self.budget_tree.tag_configure("archived", foreground="#888888")
         self.budget_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
@@ -593,15 +669,27 @@ class EnveloppeApp:
         # irrecuperable depuis l'interface.
         active_categories = self.db.list_categories(include_archived=False)
         active_ids = {c["id"] for c in active_categories}
+        all_categories = self.db.list_categories(include_archived=True)
+        # bg.category_available calcule UNE SEULE FOIS par categorie pour
+        # tout ce rafraichissement (audit D40) : ce dictionnaire est ensuite
+        # reutilise pour l'affichage de chaque ligne ci-dessous, pour le
+        # calcul du "Reste a assigner" (bg.ready_to_assign_from_available,
+        # au lieu de rappeler bg.ready_to_assign qui refait exactement le
+        # meme calcul en interne) et pour le comptage des enveloppes en
+        # depassement (_refresh_overspent_summary) - auparavant jusqu'a 3
+        # appels independants a category_available (donc 6 requetes SQL) par
+        # categorie et par rafraichissement au lieu d'un seul (2 requetes).
+        available_by_category = {
+            c["id"]: bg.category_available(self.db, c["id"], self.current_month) for c in all_categories
+        }
         archived_with_balance = [
-            c for c in self.db.list_categories(include_archived=True)
-            if c["id"] not in active_ids and bg.category_available(self.db, c["id"], self.current_month) != 0
+            c for c in all_categories if c["id"] not in active_ids and available_by_category[c["id"]] != 0
         ]
         for category in active_categories + archived_with_balance:
             is_archived = category["id"] not in active_ids
             budgeted = self.db.get_budget_entry(category["id"], self.current_month)
             activity = bg.category_activity_for_month(self.db, category["id"], self.current_month)
-            available = bg.category_available(self.db, category["id"], self.current_month)
+            available = available_by_category[category["id"]]
             name = category["name"] + (" (archivee)" if is_archived else "")
             tags = []
             if available < 0:
@@ -620,21 +708,30 @@ class EnveloppeApp:
                 bg.format_amount(budgeted), bg.format_amount(activity), bg.format_amount(available),
                 progress_text,
             ), tags=tuple(tags))
-        ready = bg.ready_to_assign(self.db, self.current_month)
+        ready = bg.ready_to_assign_from_available(self.db, available_by_category)
         self.ready_to_assign_var.set(f"Reste a assigner : {bg.format_amount(ready)}")
-        self._refresh_overspent_summary()
+        self._refresh_overspent_summary(available_by_category)
 
-    def _refresh_overspent_summary(self):
+    def _refresh_overspent_summary(self, available_by_category: Optional[dict] = None):
         """Met a jour la banniere proactive de depassement (voir sa creation
         dans __init__). Compte toute categorie (active OU archivee : un
         depassement range dans une categorie archivee reste un depassement
         reel, meme motif que le coloriage "overspent" de l'onglet Budget, qui
         inclut deja archived_with_balance) dont le disponible du mois affiche
-        est negatif."""
-        count = sum(
-            1 for category in self.db.list_categories(include_archived=True)
-            if bg.category_available(self.db, category["id"], self.current_month) < 0
-        )
+        est negatif.
+
+        `available_by_category` (audit D40) : dictionnaire {category_id:
+        disponible} DEJA calcule par l'appelant (typiquement _refresh_budget,
+        qui en a de toute facon besoin pour l'affichage) - evite de rappeler
+        bg.category_available une troisieme fois par categorie. Reste
+        optionnel (calcule alors lui-meme, sur toutes les categories) pour
+        que cette methode puisse toujours etre appelee independamment."""
+        if available_by_category is None:
+            available_by_category = {
+                c["id"]: bg.category_available(self.db, c["id"], self.current_month)
+                for c in self.db.list_categories(include_archived=True)
+            }
+        count = sum(1 for available in available_by_category.values() if available < 0)
         if not count:
             self.overspent_summary_var.set("")
             return
@@ -802,7 +899,7 @@ class EnveloppeApp:
             ("cleared", "Pointee", 70),
         ]:
             self.transactions_tree.heading(col, text=label)
-            self.transactions_tree.column(col, width=width, anchor="w")
+            self.transactions_tree.column(col, width=width, anchor="w", stretch=True)
         self.transactions_tree.pack(fill=BOTH, expand=True, padx=10, pady=(5, 5))
         self.transactions_tree.bind("<Double-1>", self._edit_transaction)
 
@@ -946,6 +1043,16 @@ class EnveloppeApp:
         export_transactions_csv(self.db.list_transactions(account_id=account_id), Path(output), db=self.db)
         messagebox.showinfo(APP_TITLE, f"Transactions exportees : {Path(output).name}")
 
+    def _csv_import_marker_path(self) -> Path:
+        """Fichier "temoin" d'un import CSV en cours (audit D44) - voir
+        _import_transactions_csv/_poll_csv_import (ecriture/suppression) et
+        _check_stale_csv_import_marker (verification au demarrage). Place a
+        cote du fichier de donnees actif plutot que dans un dossier temp
+        systeme : garantit qu'il reste sur le meme volume/dossier utilisateur
+        meme si l'application est deplacee, et evite toute collision entre
+        plusieurs installations pointant vers des bases differentes."""
+        return Path(self.db.path).parent / "import_csv_en_cours.json"
+
     def _import_transactions_csv(self):
         from tkinter import filedialog
 
@@ -958,6 +1065,29 @@ class EnveloppeApp:
             # Repli naturel quand un seul compte existe : un CSV exporte
             # depuis un autre outil ne connait pas forcement son nom exact.
             default_account_id = accounts[0]["id"]
+
+        # Fichier "temoin" ecrit AVANT de lancer l'import (audit D44) : grace
+        # au mode WAL et aux commits par lots de import_transactions_csv,
+        # une coupure (crash, coupure de courant) en plein import ne perd au
+        # pire que les lignes du lot en cours (jusqu'a 199, deja borne et
+        # acceptable) SANS corrompre le fichier de donnees - mais rien
+        # jusqu'ici n'avertissait l'utilisateur, au lancement suivant, qu'un
+        # import precedent avait ete interrompu avant d'avoir pu se
+        # terminer normalement. Supprime par _poll_csv_import des que
+        # l'import se termine (succes OU erreur geree normalement) : seule
+        # une interruption BRUTALE (le processus meurt avant d'atteindre
+        # _poll_csv_import) laisse ce fichier derriere elle, ce qui est
+        # precisement le signal recherche. Ecriture best-effort (jamais
+        # bloquante pour l'import lui-meme si le dossier est en lecture
+        # seule ou temporairement indisponible).
+        try:
+            from datetime import datetime as _datetime
+            self._csv_import_marker_path().write_text(
+                json.dumps({"source_file": str(input_path), "started_at": _datetime.now().isoformat()}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
         # Un import de plusieurs milliers de lignes reste une operation de
         # plusieurs secondes meme apres l'optimisation des commits (voir
@@ -999,6 +1129,13 @@ class EnveloppeApp:
 
         self.import_csv_button.configure(state="normal")
         self.import_status_var.set("")
+        # L'import s'est termine normalement (succes ou erreur geree) : le
+        # fichier temoin n'a plus lieu d'etre (audit D44, voir
+        # _import_transactions_csv). Best-effort, comme son ecriture.
+        try:
+            self._csv_import_marker_path().unlink(missing_ok=True)
+        except OSError:
+            pass
 
         if status == "error":
             messagebox.showwarning(APP_TITLE, payload)
@@ -1010,13 +1147,66 @@ class EnveloppeApp:
         self._refresh_budget()
         message = f"{result['imported']} transaction(s) importee(s)."
         if result["duplicates"]:
-            message += f"\n{len(result['duplicates'])} doublon(s) ignore(s) (deja present(s))."
+            # Detail ligne par ligne (compte/date/montant/beneficiaire), pas
+            # seulement un compteur (audit D17) : la cle de doublon ignore
+            # volontairement la categorie, donc deux depenses legitimement
+            # distinctes (meme jour/compte/montant/beneficiaire, ex : deux
+            # passages a la meme boulangerie) peuvent en theorie produire un
+            # faux positif silencieusement ignore - ce detail permet une
+            # verification manuelle rapide plutot qu'un chiffre opaque.
+            message += f"\n{len(result['duplicates'])} doublon(s) ignore(s) (deja present(s)) :\n"
+            message += "\n".join(
+                f"  ligne {d['line']} : {d['account']} {d['date']} {bg.format_amount(d['amount'])} {d['payee']}"
+                for d in result["duplicates"][:10]
+            )
+            if len(result["duplicates"]) > 10:
+                message += f"\n  ... et {len(result['duplicates']) - 10} autre(s)."
         if result["skipped"]:
             message += f"\n{len(result['skipped'])} ligne(s) ignoree(s) :\n"
             message += "\n".join(f"  ligne {s['line']} : {s['reason']}" for s in result["skipped"][:10])
             if len(result["skipped"]) > 10:
                 message += f"\n  ... et {len(result['skipped']) - 10} autre(s)."
         messagebox.showinfo(APP_TITLE, message)
+
+    def _check_stale_csv_import_marker(self):
+        """Avertit si un import CSV precedent ne s'est pas termine
+        normalement (audit D44) - voir _csv_import_marker_path et son
+        ecriture/suppression dans _import_transactions_csv/_poll_csv_import.
+        Le fichier temoin ne survit a un lancement QUE si le processus a ete
+        interrompu brutalement (coupure de courant, plantage) pendant
+        l'import lui-meme : le mode WAL et les commits par lots de
+        import_transactions_csv bornent deja la perte possible a moins de
+        200 lignes et garantissent qu'aucune corruption du fichier de
+        donnees ne survient - mais rien jusqu'ici n'informait l'utilisateur
+        que cette situation s'etait produite ; il n'aurait pu le remarquer
+        que par lui-meme, en recomptant ses transactions."""
+        marker_path = self._csv_import_marker_path()
+        if not marker_path.exists():
+            return
+        try:
+            info = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = {}
+        try:
+            # Supprime immediatement, avant meme d'avertir : ne plus jamais
+            # re-signaler le meme incident aux lancements suivants, meme si
+            # l'utilisateur ferme la boite de dialogue sans la lire.
+            marker_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        source = info.get("source_file", "(fichier inconnu)")
+        started_at = info.get("started_at", "date inconnue")
+        messagebox.showwarning(
+            APP_TITLE,
+            "Un import CSV precedent ne semble pas s'etre termine normalement.\n\n"
+            f"Fichier : {source}\nDemarre le : {started_at}\n\n"
+            "Si l'application a ete interrompue brutalement (coupure de courant, "
+            "plantage) pendant cet import, jusqu'a 199 lignes du fichier source "
+            "ont pu ne pas etre importees. Verifiez le nombre de transactions "
+            "importees et, si besoin, reimportez le meme fichier CSV : les "
+            "transactions deja presentes seront automatiquement ignorees comme "
+            "doublons.",
+        )
 
     def _refresh_transaction_account_choices(self):
         accounts, labels = self._account_choices()
@@ -1047,20 +1237,11 @@ class EnveloppeApp:
             messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
             return
         category_id = self._parse_id(self.tx_category_var.get())
-        date_text = self.tx_date_var.get().strip()
         try:
-            from datetime import date as _date
-            _date.fromisoformat(date_text)
-        except ValueError:
-            messagebox.showwarning(APP_TITLE, "La date doit etre au format AAAA-MM-JJ.")
-            return
-        try:
-            amount = self._parse_float(self.tx_amount_var.get(), "Le montant")
+            date_text = self._parse_iso_date(self.tx_date_var.get())
+            amount = self._parse_nonzero_amount(self.tx_amount_var.get())
         except ValueError as exc:
             messagebox.showwarning(APP_TITLE, str(exc))
-            return
-        if amount == 0:
-            messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
             return
         self.db.add_transaction(account_id, date_text, amount, category_id=category_id, payee=self.tx_payee_var.get())
         self.tx_payee_var.set("")
@@ -1103,8 +1284,19 @@ class EnveloppeApp:
             tx = self.db.get_transaction(transaction_id)
             if tx is None:
                 continue
-            self.db.update_transaction(transaction_id, cleared=0 if tx["cleared"] else 1)
-        self._refresh_transactions()
+            new_cleared = 0 if tx["cleared"] else 1
+            self.db.update_transaction(transaction_id, cleared=new_cleared)
+            # Mise a jour incrementale de la seule cellule concernee (audit
+            # D41) plutot qu'une reconstruction complete du Treeview (delete
+            # + reinsertion de TOUTES les transactions du filtre courant a
+            # chaque pointage) : pointer/depointer ne change jamais la date,
+            # le compte ni le montant d'une ligne, donc jamais son rang dans
+            # l'ordre d'affichage (date, id) - une simple mise a jour de
+            # cellule est ici strictement equivalente a un rafraichissement
+            # complet, sans reconstruire tout le tableau a chaque bascule
+            # (potentiellement des dizaines de lignes lors d'un
+            # rapprochement bancaire en multi-selection).
+            self.transactions_tree.set(iid, "cleared", "Oui" if new_cleared else "-")
         self._refresh_accounts()
 
     def _delete_transaction(self):
@@ -1121,12 +1313,25 @@ class EnveloppeApp:
                 "Supprimer les deux jambes liees du virement ?",
             ):
                 return
+            removed_ids = [transaction_id, tx["transfer_id"]]
             self.db.delete_transfer_pair(transaction_id)
         else:
             if not messagebox.askyesno(APP_TITLE, "Supprimer cette transaction ?"):
                 return
+            removed_ids = [transaction_id]
             self.db.delete_transaction(transaction_id)
-        self._refresh_transactions()
+        # Suppression incrementale des seules lignes concernees (audit D41)
+        # au lieu d'une reconstruction complete du Treeview : supprimer une
+        # (ou deux, pour un virement) transaction ne change jamais l'ordre
+        # relatif des transactions restantes - retirer uniquement la ou les
+        # lignes supprimees reste donc strictement equivalent a un
+        # rafraichissement complet. `exists()` protege le cas ou la jambe
+        # liee d'un virement n'est pas dans le Treeview actuel (filtre par
+        # compte actif sur l'AUTRE compte du virement).
+        for removed_id in removed_ids:
+            iid = str(removed_id)
+            if self.transactions_tree.exists(iid):
+                self.transactions_tree.delete(iid)
         self._refresh_accounts()
         self._refresh_budget()
 
@@ -1277,20 +1482,11 @@ class EnveloppeApp:
             if account_id is None:
                 messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
                 return
-            date_text = date_var.get().strip()
             try:
-                from datetime import date as _date
-                _date.fromisoformat(date_text)
-            except ValueError:
-                messagebox.showwarning(APP_TITLE, "La date doit etre au format AAAA-MM-JJ.")
-                return
-            try:
-                amount = self._parse_float(amount_var.get(), "Le montant")
+                date_text = self._parse_iso_date(date_var.get())
+                amount = self._parse_nonzero_amount(amount_var.get())
             except ValueError as exc:
                 messagebox.showwarning(APP_TITLE, str(exc))
-                return
-            if amount == 0:
-                messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
                 return
             update_kwargs = dict(
                 account_id=account_id, date=date_text, payee=payee_var.get().strip(), amount=amount,
@@ -1367,7 +1563,7 @@ class EnveloppeApp:
             ("category", "Categorie", 140), ("amount", "Montant", 100),
         ]:
             self.recurring_tree.heading(col, text=label)
-            self.recurring_tree.column(col, width=width, anchor="w")
+            self.recurring_tree.column(col, width=width, anchor="w", stretch=True)
         self.recurring_tree.pack(fill=BOTH, expand=True, padx=10, pady=(5, 5))
 
         actions = ttk.Frame(frame)
@@ -1403,20 +1599,11 @@ class EnveloppeApp:
             messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
             return
         category_id = self._parse_id(self.rec_category_var.get())
-        date_text = self.rec_date_var.get().strip()
         try:
-            from datetime import date as _date
-            _date.fromisoformat(date_text)
-        except ValueError:
-            messagebox.showwarning(APP_TITLE, "La date doit etre au format AAAA-MM-JJ.")
-            return
-        try:
-            amount = self._parse_float(self.rec_amount_var.get(), "Le montant")
+            date_text = self._parse_iso_date(self.rec_date_var.get())
+            amount = self._parse_nonzero_amount(self.rec_amount_var.get())
         except ValueError as exc:
             messagebox.showwarning(APP_TITLE, str(exc))
-            return
-        if amount == 0:
-            messagebox.showwarning(APP_TITLE, "Le montant ne peut pas etre nul.")
             return
         frequency = self._RECURRING_FREQUENCY_VALUES.get(self.rec_frequency_var.get(), "monthly")
         self.db.add_recurring_transaction(
@@ -1536,12 +1723,12 @@ class EnveloppeApp:
         columns = ("category",) + tuple(months) + ("total",)
         self.reports_tree["columns"] = columns
         self.reports_tree.heading("category", text="Categorie")
-        self.reports_tree.column("category", width=180, anchor="w")
+        self.reports_tree.column("category", width=180, anchor="w", stretch=True)
         for month in months:
             self.reports_tree.heading(month, text=bg.month_label(month))
-            self.reports_tree.column(month, width=100, anchor="e")
+            self.reports_tree.column(month, width=100, anchor="e", stretch=True)
         self.reports_tree.heading("total", text="Total")
-        self.reports_tree.column("total", width=110, anchor="e")
+        self.reports_tree.column("total", width=110, anchor="e", stretch=True)
 
         self.reports_tree.delete(*self.reports_tree.get_children())
         for row in report["rows"]:
@@ -1585,12 +1772,12 @@ class EnveloppeApp:
         columns = ("category",) + tuple(months) + ("total",)
         self.annual_tree["columns"] = columns
         self.annual_tree.heading("category", text="Categorie")
-        self.annual_tree.column("category", width=180, anchor="w")
+        self.annual_tree.column("category", width=180, anchor="w", stretch=True)
         for month, label in zip(months, short_labels):
             self.annual_tree.heading(month, text=label)
-            self.annual_tree.column(month, width=80, anchor="e")
+            self.annual_tree.column(month, width=80, anchor="e", stretch=True)
         self.annual_tree.heading("total", text="Total")
-        self.annual_tree.column("total", width=110, anchor="e")
+        self.annual_tree.column("total", width=110, anchor="e", stretch=True)
 
         self.annual_tree.delete(*self.annual_tree.get_children())
         for row in overview["rows"]:
@@ -1622,6 +1809,25 @@ class EnveloppeApp:
         ttk.Button(buttons, text="Sauvegarder les donnees...", command=self._backup_database).pack(side=LEFT)
         ttk.Button(buttons, text="Ouvrir le dossier de donnees", command=self._open_data_dir).pack(side=LEFT, padx=(6, 0))
 
+        # Bouton "Restaurer..." dedie (audit D47) : jusqu'ici, restaurer une
+        # sauvegarde exigeait de fermer l'application et de remplacer
+        # manuellement le fichier enveloppe.sqlite a la main (toujours
+        # possible, et toujours documente dans le README) - geste multi-
+        # etapes sujet a erreur (mauvais fichier, mauvais dossier, oubli de
+        # fermer l'app avant de copier). Ce bouton fait la meme chose depuis
+        # l'IHM, sans quitter l'application : ferme proprement la connexion
+        # active, copie le fichier choisi par-dessus, puis rouvre une
+        # connexion et rafraichit tous les onglets - voir _restore_database.
+        restore_frame = ttk.LabelFrame(frame, text="Restauration", padding=10)
+        restore_frame.pack(fill=X, padx=10, pady=(0, 10))
+        ttk.Label(
+            restore_frame,
+            text="Remplace toutes les donnees actuelles par le contenu d'un fichier de\n"
+                 "sauvegarde choisi - operation irreversible, a utiliser avec precaution.",
+            justify=LEFT,
+        ).pack(anchor="w", pady=(0, 8))
+        ttk.Button(restore_frame, text="Restaurer une sauvegarde...", command=self._restore_database).pack(anchor="w")
+
     def _backup_database(self):
         from datetime import date
         from tkinter import filedialog
@@ -1650,9 +1856,89 @@ class EnveloppeApp:
         messagebox.showinfo(
             APP_TITLE,
             f"Sauvegarde enregistree :\n{path}\n\n"
-            "Pour restaurer : fermez Enveloppe, puis remplacez le fichier de donnees "
-            "actif par cette copie.",
+            "Pour restaurer : utilisez le bouton 'Restaurer une sauvegarde...' "
+            "juste en dessous, ou fermez Enveloppe et remplacez manuellement le "
+            "fichier de donnees actif par cette copie.",
         )
+
+    def _restore_database(self):
+        """Restaure une sauvegarde choisie par l'utilisateur par-dessus les
+        donnees actives (audit D47), sans quitter l'application : ferme la
+        connexion active, copie le fichier choisi par-dessus le fichier de
+        donnees, rouvre une connexion sur ce meme chemin, puis rafraichit
+        tous les onglets pour refleter les donnees restaurees."""
+        import shutil
+        import sqlite3
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(
+            title="Restaurer une sauvegarde", filetypes=[("Base SQLite", "*.sqlite"), ("Tous les fichiers", "*.*")],
+        )
+        if not path:
+            return
+        backup_path = Path(path)
+        active_path = Path(self.db.path)
+        try:
+            if backup_path.resolve() == active_path.resolve():
+                messagebox.showwarning(APP_TITLE, "Le fichier selectionne est deja le fichier de donnees actif.")
+                return
+        except OSError:
+            pass
+
+        # Validation minimale avant d'ecraser irreversiblement les donnees
+        # actives : le fichier choisi doit au moins etre une base SQLite
+        # exploitable comportant la table "accounts" - sans ce garde-fou, un
+        # fichier quelconque (mauvaise extension, base d'une autre
+        # application, fichier corrompu ou tronque) effacerait silencieusement
+        # toutes les donnees actuelles. Ouverture en lecture seule (mode=ro)
+        # pour ne jamais modifier accidentellement le fichier de sauvegarde
+        # lui-meme au cours de cette simple verification.
+        try:
+            probe = sqlite3.connect(f"file:{backup_path.as_posix()}?mode=ro", uri=True)
+            try:
+                tables = {row[0] for row in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            finally:
+                probe.close()
+        except sqlite3.Error as exc:
+            messagebox.showerror(APP_TITLE, f"Ce fichier n'est pas une base de donnees SQLite valide : {exc}")
+            return
+        if "accounts" not in tables:
+            messagebox.showerror(
+                APP_TITLE,
+                "Ce fichier ne semble pas etre une sauvegarde Enveloppe valide "
+                "(table 'accounts' introuvable).",
+            )
+            return
+
+        if not messagebox.askyesno(
+            APP_TITLE,
+            "Restaurer cette sauvegarde va REMPLACER definitivement toutes les "
+            "donnees actuelles (comptes, categories, budgets, transactions) par "
+            "le contenu de ce fichier.\n\n"
+            f"Fichier choisi :\n{backup_path}\n\n"
+            "Cette action est irreversible (sauvegardez vos donnees actuelles au "
+            "prealable si besoin). Continuer ?",
+        ):
+            return
+
+        try:
+            self.db.close()
+            shutil.copy2(backup_path, active_path)
+        except (OSError, sqlite3.Error) as exc:
+            messagebox.showerror(APP_TITLE, f"Impossible de restaurer la sauvegarde : {exc}")
+            self.db = Database(active_path)  # ne jamais laisser l'application sans connexion valide
+            return
+        self.db = Database(active_path)
+
+        self.current_month = bg.current_month()
+        self._refresh_accounts()
+        self._refresh_categories()
+        self._refresh_budget()
+        self._refresh_transactions()
+        self._refresh_recurring()
+        self._refresh_reports()
+        self._refresh_annual()
+        messagebox.showinfo(APP_TITLE, "Sauvegarde restauree avec succes.")
 
     def _open_data_dir(self):
         import os

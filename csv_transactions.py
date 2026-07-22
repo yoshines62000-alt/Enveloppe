@@ -346,9 +346,20 @@ def import_transactions_csv(
         if skip_duplicates:
             key = _duplicate_key(account_id, date, amount, payee)
             if key in existing_keys:
+                # Detail (compte/date/montant/beneficiaire) inclus explicitement
+                # (audit D17) : la cle de doublon ignore volontairement la
+                # categorie (deux depenses legitimement distinctes le meme
+                # jour, meme compte, meme montant, meme beneficiaire - ex :
+                # deux passages a la meme boulangerie a 4,50 EUR - seraient
+                # sinon de faux positifs silencieux, la seconde etant ignoree
+                # sans que rien ne permette a l'utilisateur de le remarquer
+                # sans verification manuelle). Fournir ce detail ligne par
+                # ligne (repris par l'IHM, voir gui.py) permet une
+                # verification rapide plutot qu'un simple compteur opaque.
                 duplicates.append({
                     "line": line_number,
                     "reason": "transaction identique deja presente (meme compte/date/montant/beneficiaire)",
+                    "account": row.get("Compte", ""), "date": date, "amount": amount, "payee": payee,
                 })
                 continue
             existing_keys.add(key)  # ecarte aussi les doublons internes au fichier importe lui-meme

@@ -540,6 +540,58 @@ class TransferTestCase(unittest.TestCase):
         reopened.add_transfer(1, savings_id, "2026-01-10", 50.0)
 
 
+class SchemaVersionTestCase(unittest.TestCase):
+    """Audit D45 : le schema est desormais suivi explicitement via PRAGMA
+    user_version (entier natif SQLite, persiste dans le fichier .sqlite lui-
+    meme), pour permettre un diagnostic simple ("a quelle version de schema
+    en est cette base ?") sans avoir a lire le code source correspondant a
+    chaque version."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_a_freshly_created_database_has_the_current_schema_version(self):
+        db = Database(self.tmp / "fresh.sqlite")
+        self.addCleanup(db.close)
+        self.assertEqual(db.schema_version(), 3)
+
+    def test_schema_version_persists_across_reopening(self):
+        path = self.tmp / "persist.sqlite"
+        db = Database(path)
+        db.close()
+        reopened = Database(path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.schema_version(), 3)
+
+    def test_reopening_a_pre_migration_database_upgrades_its_schema_version(self):
+        # Simule une base creee avant l'introduction de PRAGMA user_version
+        # (donc a 0, la valeur par defaut SQLite pour tout fichier neuf) -
+        # la reouverture doit la faire passer a la version courante, meme
+        # motif que test_reopening_a_pre_transfer_database_file_adds_the_
+        # missing_column (TransferTestCase) pour les colonnes additives.
+        import sqlite3
+
+        old_style_path = self.tmp / "old.sqlite"
+        conn = sqlite3.connect(str(old_style_path))
+        conn.executescript("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT '',
+                starting_balance REAL NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, group_name TEXT NOT NULL DEFAULT '',
+                archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
+        """)
+        conn.commit()
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+        conn.close()
+
+        reopened = Database(old_style_path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.schema_version(), 3)
+
+
 class TransactionSplitTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

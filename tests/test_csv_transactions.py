@@ -449,6 +449,25 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         self.assertEqual(len(second["duplicates"]), 1)
         self.assertEqual(len(self.db.list_transactions()), 1)
 
+    def test_duplicates_report_includes_actionable_detail_for_manual_verification(self):
+        # Audit D17 : la cle de doublon ignore volontairement la categorie
+        # (deux depenses distinctes le meme jour/compte/montant/beneficiaire
+        # seraient sinon un faux positif silencieux) - le rapport de
+        # doublons doit donc fournir assez de detail (compte/date/montant/
+        # beneficiaire) pour qu'une verification manuelle rapide reste
+        # possible, plutot qu'un simple compteur opaque.
+        path = self._write_csv([
+            ["", "2026-01-05", "Compte courant", "Epicerie", "Supermarche", "", "-30.00", "Non"],
+        ])
+        import_transactions_csv(self.db, path)
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(len(result["duplicates"]), 1)
+        detail = result["duplicates"][0]
+        self.assertEqual(detail["account"], "Compte courant")
+        self.assertEqual(detail["date"], "2026-01-05")
+        self.assertEqual(detail["amount"], -30.0)
+        self.assertEqual(detail["payee"], "Supermarche")
+
     def test_duplicate_rows_within_the_same_file_are_only_imported_once(self):
         path = self._write_csv([
             ["", "2026-01-05", "Compte courant", "", "Supermarche", "", "-30.00", "Non"],

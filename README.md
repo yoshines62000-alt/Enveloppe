@@ -4,6 +4,7 @@
 [![Téléchargements](https://img.shields.io/github/downloads/yoshines62000-alt/Enveloppe/total?label=t%C3%A9l%C3%A9chargements)](https://github.com/yoshines62000-alt/Enveloppe/releases/latest)
 
 **[⬇️ Télécharger l'exécutable (.exe) — aucune installation requise](https://github.com/yoshines62000-alt/Enveloppe/releases/latest)**
+— voir le [CHANGELOG](CHANGELOG.md) pour l'historique des changements.
 
 Budget personnel par la méthode des enveloppes (zero-based budgeting) —
 gratuit, open source, et 100 % local. Alternative libre à
@@ -134,9 +135,13 @@ standard de Python sous Windows).
   données... » enregistre une copie complète du fichier de données à
   l'emplacement de votre choix, sans fermer l'application ni verrouiller la
   base active.
-- Pour restaurer une sauvegarde : fermez Enveloppe, puis remplacez le
-  fichier `%APPDATA%\Enveloppe\enveloppe.sqlite` par la copie de sauvegarde
-  (le bouton « Ouvrir le dossier de données » y accède directement).
+- Onglet **Paramètres > Restauration** : le bouton « Restaurer une
+  sauvegarde... » remplace toutes les données actuelles par le contenu d'un
+  fichier de sauvegarde choisi, sans quitter l'application (confirmation
+  demandée avant tout remplacement, irréversible). Alternative manuelle
+  toujours possible : fermez Enveloppe, puis remplacez le fichier
+  `%APPDATA%\Enveloppe\enveloppe.sqlite` par la copie de sauvegarde (le
+  bouton « Ouvrir le dossier de données » y accède directement).
 
 ## Créer un exécutable autonome (.exe)
 
@@ -153,6 +158,21 @@ L'exécutable est produit dans `dist/Enveloppe.exe` (fichier unique, sans
 console). Le fichier `.spec` du dépôt fixe la configuration de build pour un
 résultat reproductible. Les dossiers `build/` et `dist/` ne sont pas suivis
 par Git.
+
+Les builds officiels sont produits avec **Python 3.14.x** (version exacte
+dans [`.python-version`](.python-version)) et PyInstaller ; utiliser une
+version sensiblement différente reste possible mais n'est pas garanti de
+produire un binaire strictement identique.
+
+L'icône `icon.ico` (multi-résolution : 16, 32, 48 et 256 px, pour un rendu
+net dans la barre des tâches, le sélecteur Alt-Tab et l'Explorateur) peut
+être régénérée avec [Pillow](https://python-pillow.org/) via
+[`build_icon.py`](build_icon.py) :
+
+```bash
+python -m pip install pillow
+python build_icon.py
+```
 
 ## Tests
 
@@ -173,14 +193,17 @@ db.py                  # couche donnees SQLite : comptes, categories, budget, tr
 budget.py              # logique pure du budget a enveloppes (report, reste a assigner)
 csv_transactions.py    # export/import CSV des transactions
 gui.py                 # interface graphique Tkinter
+build_icon.py          # regenere icon.ico en multi-resolution (Pillow, build uniquement)
 tests/                 # tests automatises (dont un smoke test bout en bout de la GUI)
-requirements.txt      # aucune dependance tierce a l'execution
+requirements.txt      # aucune dependance tierce a l'execution (Pillow : build uniquement)
+.python-version        # version de Python utilisee pour les builds officiels
 Lancer.vbs            # raccourci de lancement double-clic (sans console)
 Lancer.bat            # raccourci de lancement double-clic (avec console, pour debug)
 Enveloppe.spec        # configuration de build PyInstaller (.exe autonome)
-icon.ico              # icone de l'application et de l'executable
+icon.ico              # icone de l'application et de l'executable (multi-resolution)
 .gitignore
 LICENSE               # licence MIT
+CHANGELOG.md           # historique des changements par version
 README.md
 ```
 

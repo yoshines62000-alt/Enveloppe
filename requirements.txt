@@ -1,3 +1,6 @@
 # Aucune dependance tierce a l'execution : uniquement la bibliotheque
 # standard Python (tkinter, sqlite3). Pillow n'est utilise que pour
-# regenerer icon.ico au moment du build, pas au lancement de l'application.
+# regenerer icon.ico au moment du build (voir build_icon.py), pas au
+# lancement de l'application.
+#
+# pip install pillow

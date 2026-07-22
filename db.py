@@ -18,6 +18,19 @@ from typing import Optional
 _MONTH_FORMAT_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 _DATE_FORMAT_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
 
+# Version explicite du schema (audit D45), stockee via PRAGMA user_version
+# (entier natif SQLite, persiste directement dans le fichier .sqlite, sans
+# table supplementaire). Jusqu'ici, les migrations additives
+# (_add_column_if_missing ci-dessous) etaient bien idempotentes et
+# fonctionnelles, mais savoir "a quelle version de schema en est cette
+# base ?" necessitait de lire le code source correspondant a chaque version
+# plutot qu'une simple requete (`PRAGMA user_version` ou
+# Database.schema_version()). A incrementer a chaque future migration
+# additive : 1 = transfer_id (virements lies), 2 = categories.savings_goal
+# (objectif d'epargne), 3 = recurring_transactions.anchor_day (jour
+# d'echeance fige, independant des glissements de mois courts).
+_SCHEMA_VERSION = 3
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -230,6 +243,18 @@ class Database:
         self._add_column_if_missing("transactions", "transfer_id", "INTEGER REFERENCES transactions(id)")
         self._add_column_if_missing("categories", "savings_goal", "REAL")
         self._add_column_if_missing("recurring_transactions", "anchor_day", "INTEGER")
+        # Ecrit (ou reecrit) la version de schema a chaque ouverture, une
+        # fois les migrations ci-dessus appliquees - idempotent et sans
+        # cout, protege aussi bien le tout premier lancement sur une base
+        # neuve qu'une base plus ancienne qui vient d'etre migree.
+        self.conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+    def schema_version(self) -> int:
+        """Version de schema actuellement enregistree dans le fichier de
+        donnees (voir _SCHEMA_VERSION) - utile pour diagnostiquer a quelle
+        version de schema correspond une base donnee sans avoir a lire le
+        code source de chaque version."""
+        return self.conn.execute("PRAGMA user_version").fetchone()[0]
 
     def _add_column_if_missing(self, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}

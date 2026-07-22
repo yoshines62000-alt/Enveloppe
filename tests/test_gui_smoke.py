@@ -6,6 +6,7 @@ points qui ouvriraient une vraie boite de dialogue modale bloquante) -
 tout le reste du parcours utilisateur est reellement execute."""
 
 import csv
+import json
 import re
 import sys
 import tempfile
@@ -180,6 +181,96 @@ class GuiSmokeTestCase(unittest.TestCase):
             self.app._backup_database()
         mock_error.assert_called_once()
 
+    # -- audit D47 : bouton "Restaurer une sauvegarde..." dedie --------------
+    # Jusqu'ici, restaurer une sauvegarde exigeait de fermer l'application et
+    # de remplacer manuellement le fichier de donnees a la main - ce bouton
+    # permet de le faire depuis l'IHM, sans quitter l'application.
+
+    def test_settings_tab_exists_with_a_restore_button(self):
+        labels = {b["text"] for b in _collect_widgets(self.app.settings_tab, "TButton")}
+        self.assertIn("Restaurer une sauvegarde...", labels)
+
+    def test_restore_replaces_active_data_with_the_chosen_backup(self):
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+
+        from db import Database
+        backup_path = self.tmp / "sauvegarde.sqlite"
+        backup_db = Database(backup_path)
+        backup_db.add_account("Compte restaure", starting_balance=999.0)
+        backup_db.close()
+
+        active_path = Path(self.app.db.path)
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
+             patch("tkinter.messagebox.askyesno", return_value=True):
+            self.app._restore_database()
+
+        # La restauration reste sur le MEME fichier de donnees actif (pas de
+        # bascule vers le fichier de sauvegarde lui-meme).
+        self.assertEqual(Path(self.app.db.path), active_path)
+        names = [a["name"] for a in self.app.db.list_accounts()]
+        self.assertIn("Compte restaure", names)
+        self.assertNotIn("Compte original", names)
+        self.mock_info.assert_called_once()
+
+        # Le Treeview reflete deja les donnees restaurees (tous les onglets
+        # sont rafraichis), sans necessiter de redemarrer l'application.
+        tree_names = {
+            self.app.accounts_tree.item(iid, "values")[1] for iid in self.app.accounts_tree.get_children()
+        }
+        self.assertIn("Compte restaure", tree_names)
+
+    def test_declining_the_restore_confirmation_leaves_active_data_untouched(self):
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+
+        from db import Database
+        backup_path = self.tmp / "sauvegarde.sqlite"
+        backup_db = Database(backup_path)
+        backup_db.add_account("Compte restaure")
+        backup_db.close()
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
+             patch("tkinter.messagebox.askyesno", return_value=False):
+            self.app._restore_database()
+
+        names = [a["name"] for a in self.app.db.list_accounts()]
+        self.assertIn("Compte original", names)
+        self.assertNotIn("Compte restaure", names)
+
+    def test_restore_refuses_a_file_that_is_not_a_valid_sqlite_database(self):
+        # Garde-fou avant d'ecraser irreversiblement les donnees actives : un
+        # fichier quelconque (mauvaise extension, corrompu...) ne doit pas
+        # pouvoir remplacer silencieusement toutes les donnees.
+        bogus = self.tmp / "pas_une_base.sqlite"
+        bogus.write_text("ceci n'est pas du tout une base SQLite", encoding="utf-8")
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(bogus)), \
+             patch("tkinter.messagebox.showerror") as mock_error:
+            self.app._restore_database()
+        mock_error.assert_called_once()
+        names = [a["name"] for a in self.app.db.list_accounts()]
+        self.assertIn("Compte original", names)
+
+    def test_restore_refuses_a_valid_sqlite_file_missing_the_accounts_table(self):
+        import sqlite3
+
+        other_db_path = self.tmp / "autre_base.sqlite"
+        conn = sqlite3.connect(str(other_db_path))
+        conn.execute("CREATE TABLE autre_chose (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(other_db_path)), \
+             patch("tkinter.messagebox.showerror") as mock_error:
+            self.app._restore_database()
+        mock_error.assert_called_once()
+
+    def test_restore_refuses_selecting_the_currently_active_database_file(self):
+        active_path = str(self.app.db.path)
+        with patch("tkinter.filedialog.askopenfilename", return_value=active_path):
+            self.app._restore_database()
+        self.mock_warning.assert_called_once()
+
     # -- item 6 : banniere de depassement ------------------------------------
 
     def test_overspent_banner_is_empty_when_nothing_is_overspent(self):
@@ -199,6 +290,35 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app._refresh_budget()
         self.assertIn("1 enveloppe", self.app.overspent_summary_var.get())
         self.assertIn("depassement", self.app.overspent_summary_var.get())
+
+    # -- audit D40 : recalcul redondant de category_available -----------------
+
+    def test_refresh_budget_calls_category_available_at_most_once_per_category(self):
+        # Avant le correctif, _refresh_budget appelait bg.category_available
+        # jusqu'a plusieurs fois par categorie (affichage de la ligne, filtre
+        # archived_with_balance, bg.ready_to_assign, _refresh_overspent_summary
+        # - chacun rebouclant independamment sur les categories) - desormais
+        # un seul appel par categorie, le resultat etant reutilise partout.
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat1 = self.app.db.add_category("Epicerie")
+        cat2 = self.app.db.add_category("Loisirs")
+        archived_cat = self.app.db.add_category("Ancien projet")
+        self.app.db.set_budget_entry(cat1, self.app.current_month, 100.0)
+        self.app.db.set_budget_entry(cat2, self.app.current_month, 50.0)
+        self.app.db.set_budget_entry(archived_cat, self.app.current_month, 30.0)
+        self.app.db.update_category(archived_cat, archived=1)
+
+        original = bg.category_available
+        calls = []
+
+        def counting_category_available(db, category_id, month):
+            calls.append(category_id)
+            return original(db, category_id, month)
+
+        with patch.object(bg, "category_available", side_effect=counting_category_available):
+            self.app._refresh_budget()
+
+        self.assertEqual(sorted(calls), sorted([cat1, cat2, archived_cat]))
 
     def test_overspent_banner_is_visible_outside_the_notebook_from_startup(self):
         # La banniere doit exister comme widget racine independant du
@@ -595,6 +715,140 @@ class GuiSmokeTestCase(unittest.TestCase):
         message = self.mock_info.call_args[0][1]
         self.assertIn("2 transaction(s) importee(s)", message)
         self.assertEqual(len(self.app.db.list_transactions()), 2)
+
+    # -- audit D44 : notification apres coupure pendant un import CSV --------
+    # Le mode WAL et les commits par lots bornaient deja la perte possible a
+    # moins de 200 lignes en cas de coupure/plantage pendant l'import (sans
+    # corrompre le fichier de donnees), mais rien n'avertissait l'utilisateur
+    # au lancement suivant qu'un import precedent avait ete interrompu avant
+    # de se terminer normalement.
+
+    def test_a_marker_file_exists_while_an_import_is_in_progress_and_is_removed_once_it_completes(self):
+        self.app.db.add_account("Compte", starting_balance=0.0)
+        csv_path = self._write_import_csv([["", "2026-01-05", "Compte", "", "Test", "", "-10.00", "Non"]])
+
+        def slow_import(db, input_path, default_account_id=None, skip_duplicates=True):
+            time.sleep(0.3)
+            return {"imported": 1, "skipped": [], "duplicates": []}
+
+        marker_path = self.app._csv_import_marker_path()
+        self.assertFalse(marker_path.exists())
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
+             patch.object(gui, "import_transactions_csv", side_effect=slow_import):
+            self.app._import_transactions_csv()
+            self.assertTrue(marker_path.exists(), "le fichier temoin doit exister pendant l'import")
+            self._pump_until(lambda: self.mock_info.called)
+
+        self.assertFalse(marker_path.exists(), "le fichier temoin doit disparaitre une fois l'import termine")
+
+    def test_marker_file_is_removed_even_when_the_import_fails_with_an_error(self):
+        self.app.db.add_account("Compte", starting_balance=0.0)
+        csv_path = self._write_import_csv([["", "2026-01-05", "Compte", "", "Test", "", "-10.00", "Non"]])
+
+        def failing_import(db, input_path, default_account_id=None, skip_duplicates=True):
+            raise gui.CsvImportError("erreur simulee")
+
+        marker_path = self.app._csv_import_marker_path()
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
+             patch.object(gui, "import_transactions_csv", side_effect=failing_import):
+            self.app._import_transactions_csv()
+            self._pump_until(lambda: self.mock_warning.called)
+
+        self.assertFalse(marker_path.exists(), "le fichier temoin doit disparaitre meme si l'import echoue")
+
+    def test_a_leftover_marker_file_from_a_crashed_import_triggers_a_warning_at_next_startup(self):
+        # Simule une coupure en plein import CSV precedent : le fichier
+        # temoin (normalement supprime a la fin de _poll_csv_import) est
+        # encore la au lancement suivant.
+        marker_path = self.app._csv_import_marker_path()
+        marker_path.write_text(
+            json.dumps({"source_file": "C:/releve.csv", "started_at": "2026-01-01T10:00:00"}), encoding="utf-8",
+        )
+
+        self.app._check_stale_csv_import_marker()
+
+        self.mock_warning.assert_called_once()
+        warning_text = self.mock_warning.call_args[0][1]
+        self.assertIn("releve.csv", warning_text)
+        self.assertFalse(marker_path.exists(), "le fichier temoin doit etre supprime apres avertissement")
+
+    def test_no_warning_at_startup_when_no_marker_file_is_present(self):
+        self.app._check_stale_csv_import_marker()
+        self.mock_warning.assert_not_called()
+
+    # -- audit D41 : mise a jour incrementale du Treeview Transactions -------
+    # Pointer/depointer et supprimer une transaction ne reconstruisent plus
+    # entierement le tableau (delete + reinsertion de TOUTES les transactions
+    # du filtre courant) : seules la ou les lignes concernees sont mises a
+    # jour ou retirees.
+
+    def test_toggling_cleared_updates_the_treeview_cell_without_a_full_rebuild(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -10.0, payee="Epicerie", cleared=False)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        with patch.object(self.app, "_refresh_transactions") as mock_refresh:
+            self.app._toggle_transaction_cleared()
+        mock_refresh.assert_not_called()
+        self.assertEqual(self.app.transactions_tree.set(str(tx_id), "cleared"), "Oui")
+        self.assertTrue(self.app.db.get_transaction(tx_id)["cleared"])
+
+        with patch.object(self.app, "_refresh_transactions") as mock_refresh:
+            self.app._toggle_transaction_cleared()
+        mock_refresh.assert_not_called()
+        self.assertEqual(self.app.transactions_tree.set(str(tx_id), "cleared"), "-")
+
+    def test_toggling_cleared_on_a_multi_selection_updates_every_selected_row(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        tx1 = self.app.db.add_transaction(account_id, "2026-01-05", -10.0, payee="A")
+        tx2 = self.app.db.add_transaction(account_id, "2026-01-06", -20.0, payee="B")
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx1), str(tx2))
+
+        self.app._toggle_transaction_cleared()
+
+        self.assertEqual(self.app.transactions_tree.set(str(tx1), "cleared"), "Oui")
+        self.assertEqual(self.app.transactions_tree.set(str(tx2), "cleared"), "Oui")
+        self.assertTrue(self.app.db.get_transaction(tx1)["cleared"])
+        self.assertTrue(self.app.db.get_transaction(tx2)["cleared"])
+
+    def test_deleting_a_transaction_removes_only_its_own_row_without_a_full_rebuild(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        tx1 = self.app.db.add_transaction(account_id, "2026-01-05", -10.0, payee="A")
+        tx2 = self.app.db.add_transaction(account_id, "2026-01-06", -20.0, payee="B")
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx1))
+
+        with patch("tkinter.messagebox.askyesno", return_value=True), \
+             patch.object(self.app, "_refresh_transactions") as mock_refresh:
+            self.app._delete_transaction()
+
+        mock_refresh.assert_not_called()
+        self.assertFalse(self.app.transactions_tree.exists(str(tx1)))
+        self.assertTrue(self.app.transactions_tree.exists(str(tx2)))
+        self.assertIsNone(self.app.db.get_transaction(tx1))
+
+    def test_deleting_a_transfer_pair_removes_both_legs_even_when_only_one_is_shown(self):
+        checking_id = self.app.db.add_account("Courant", starting_balance=1000.0)
+        savings_id = self.app.db.add_account("Epargne", starting_balance=0.0)
+        out_id, in_id = self.app.db.add_transfer(checking_id, savings_id, "2026-01-05", 100.0)
+
+        # Filtre sur le compte "Courant" uniquement : la jambe "in_id" (compte
+        # Epargne) n'apparait donc pas dans le Treeview actuel.
+        self.app.tx_filter_account_var.set(f"{checking_id} - Courant")
+        self.app._refresh_transactions()
+        self.assertTrue(self.app.transactions_tree.exists(str(out_id)))
+        self.assertFalse(self.app.transactions_tree.exists(str(in_id)))
+        self.app.transactions_tree.selection_set(str(out_id))
+
+        with patch("tkinter.messagebox.askyesno", return_value=True):
+            self.app._delete_transaction()
+
+        self.assertFalse(self.app.transactions_tree.exists(str(out_id)))
+        self.assertIsNone(self.app.db.get_transaction(out_id))
+        self.assertIsNone(self.app.db.get_transaction(in_id))
 
     # -- audit D1 : categorie archivee a solde non nul, deplacable sans
     # desarchiver au prealable ------------------------------------------
@@ -1004,6 +1258,51 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app.db.update_transaction(tx_id, amount=50.0)
         self.app._refresh_accounts()
         self.assertNotIn("negative", self.app.accounts_tree.item(str(account_id), "tags"))
+
+    # -- audit D5 : total agrege dans l'onglet Comptes ------------------------
+    # Jusqu'ici, aucun total n'etait jamais affiche dans cet onglet - la seule
+    # facon de verifier la coherence entre Comptes et Budget etait d'additionner
+    # mentalement chaque ligne.
+
+    def test_accounts_total_reflects_the_sum_of_all_account_balances_including_archived(self):
+        checking_id = self.app.db.add_account("Courant", starting_balance=1000.0)
+        savings_id = self.app.db.add_account("Epargne", starting_balance=500.0)
+        self.app.db.add_transaction(checking_id, "2026-01-05", -200.0, payee="Loyer", cleared=True)
+        self.app.db.add_transaction(checking_id, "2026-01-06", -50.0, payee="Non pointee", cleared=False)
+        # Un compte archive doit rester compte dans le total (meme motif que
+        # total_on_budget_balance - archiver ne fait jamais disparaitre
+        # l'argent qu'il contient reellement).
+        self.app.db.update_account(savings_id, archived=1)
+        self.app._refresh_accounts()
+
+        total_text = self.app.accounts_total_var.get()
+        self.assertIn(bg.format_amount(1250.0), total_text)  # (1000-200-50) + 500
+        self.assertIn(bg.format_amount(1300.0), total_text)  # pointe : (1000-200) + 500
+
+    def test_accounts_total_label_is_visible_as_part_of_the_accounts_tab(self):
+        label = _find_label_by_textvariable(self.app.accounts_tab, self.app.accounts_total_var)
+        self.assertIsNotNone(label, "le label du total des comptes est introuvable")
+
+    # -- audit D28/D29 : troncature/largeur des colonnes de Treeview ---------
+
+    def test_budget_category_column_is_wide_enough_for_the_archived_suffix(self):
+        # Avant le correctif : 180px, insuffisant pour un nom de categorie
+        # deja un peu long une fois le suffixe " (archivee)" ajoute (audit D28).
+        width = self.app.budget_tree.column("category")["width"]
+        self.assertGreaterEqual(width, 220)
+
+    def test_treeview_columns_are_configured_to_stretch_and_fill_available_width(self):
+        # Audit D29 : repartition proportionnelle explicite de l'espace
+        # excedentaire entre colonnes, plutot qu'une bande vide a droite du
+        # tableau sur un grand ecran.
+        for tree in (
+            self.app.budget_tree, self.app.accounts_tree, self.app.categories_tree,
+            self.app.transactions_tree, self.app.recurring_tree,
+        ):
+            for col in tree["columns"]:
+                self.assertEqual(
+                    tree.column(col)["stretch"], 1, f"{tree} colonne {col!r} devrait avoir stretch=True",
+                )
 
 
 class DpiAwarenessTestCase(unittest.TestCase):
