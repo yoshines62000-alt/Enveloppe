@@ -376,6 +376,48 @@ class DatabaseTestCase(unittest.TestCase):
         indexes = {row["name"] for row in self.db.conn.execute("PRAGMA index_list(transactions)")}
         self.assertIn("idx_transactions_category_date", indexes)
 
+    # -- audit D39 : index sur transactions.account_id -----------------------
+    #
+    # Trouve a l'audit : account_balance/account_cleared_balance (WHERE
+    # account_id = ?) forcaient un SCAN complet de la table transactions -
+    # confirme par EXPLAIN QUERY PLAN - contrairement aux requetes filtrees
+    # par categorie, qui beneficient deja de idx_transactions_category_date.
+    # Correctif : index symetrique sur account_id, cree de facon idempotente
+    # a chaque ouverture de la base (CREATE INDEX IF NOT EXISTS), y compris
+    # sur une base existante deja peuplee.
+
+    def test_idx_transactions_account_id_index_exists(self):
+        indexes = {row["name"] for row in self.db.conn.execute("PRAGMA index_list(transactions)")}
+        self.assertIn("idx_transactions_account_id", indexes)
+
+    def test_account_balance_query_uses_the_account_id_index_instead_of_a_full_scan(self):
+        account_id = self.db.add_account("Compte")
+        plan = self.db.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ?",
+            (account_id,),
+        ).fetchall()
+        plan_text = " | ".join(row["detail"] for row in plan)
+        self.assertIn("idx_transactions_account_id", plan_text)
+        self.assertNotIn("SCAN transactions", plan_text)
+
+    def test_reopening_an_existing_database_file_creates_the_missing_account_id_index(self):
+        # Simule une base creee AVANT ce correctif (index absent) : supprime
+        # l'index puis rouvre une nouvelle connexion Database sur le meme
+        # fichier - _create_schema() doit le recreer silencieusement, sans
+        # action utilisateur (meme migration idempotente que
+        # _add_column_if_missing pour les colonnes additives).
+        self.db.conn.execute("DROP INDEX idx_transactions_account_id")
+        self.db.conn.commit()
+        indexes_before = {row["name"] for row in self.db.conn.execute("PRAGMA index_list(transactions)")}
+        self.assertNotIn("idx_transactions_account_id", indexes_before)
+
+        reopened = Database(self.tmp / "test.sqlite")
+        try:
+            indexes_after = {row["name"] for row in reopened.conn.execute("PRAGMA index_list(transactions)")}
+            self.assertIn("idx_transactions_account_id", indexes_after)
+        finally:
+            reopened.close()
+
     def test_update_and_delete_transaction(self):
         account_id = self.db.add_account("A")
         cat = self.db.add_category("Epicerie")

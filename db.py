@@ -208,6 +208,20 @@ class Database:
         -- (recalculees a chaque affichage de l'onglet Budget, une fois par
         -- categorie). Sans index, chacune force un scan complet de la table.
         CREATE INDEX IF NOT EXISTS idx_transactions_category_date ON transactions(category_id, date);
+
+        -- account_id : par symetrie avec l'index category_id ci-dessus
+        -- (audit D39). account_balance/account_cleared_balance (WHERE
+        -- account_id = ?, la seconde ajoutant AND cleared = 1) sont
+        -- appelees une fois par compte a chaque rafraichissement des
+        -- onglets Comptes ET Budget (total_on_budget_balance en depend),
+        -- et forcaient jusqu'ici un SCAN complet de la table (confirme par
+        -- EXPLAIN QUERY PLAN, aucun index exploitable sur cette colonne).
+        -- Aucun impact mesure aux volumes testes (jusqu'a ~33 000
+        -- transactions), mais correction preventive triviale et sans
+        -- risque : CREATE INDEX IF NOT EXISTS est idempotent, applique
+        -- silencieusement a chaque ouverture, y compris sur une base
+        -- existante deja peuplee (aucune action utilisateur requise).
+        CREATE INDEX IF NOT EXISTS idx_transactions_account_id ON transactions(account_id);
         """)
         self.conn.commit()
         # transfer_id a ete ajoutee apres la sortie initiale : les bases

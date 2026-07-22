@@ -284,7 +284,8 @@ class EnveloppeApp:
         `on_save(value: float)` est appele avec le montant valide des que
         l'utilisateur confirme (bouton "Enregistrer" ou touche Entree) ; le
         dialogue se ferme alors automatiquement. Rien n'est appele si
-        l'utilisateur annule (bouton "Annuler" ou fermeture de la fenetre)."""
+        l'utilisateur annule (bouton "Annuler", touche Echap - audit D33 -
+        ou fermeture de la fenetre)."""
         from tkinter import Toplevel
 
         dialog = Toplevel(self.root)
@@ -316,6 +317,10 @@ class EnveloppeApp:
         ttk.Button(buttons, text="Enregistrer", command=on_confirm).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         entry.bind("<Return>", on_confirm)
+        # Echap annule et ferme le dialogue, sans rien enregistrer (audit
+        # D33) - lie sur le Toplevel plutot que sur le seul champ de saisie
+        # pour rester actif meme si le focus est ailleurs dans le dialogue.
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     # -- onglet Comptes ---------------------------------------------------------
 
@@ -329,12 +334,24 @@ class EnveloppeApp:
         self.account_balance_var = StringVar(value="0")
 
         ttk.Label(form, text="Nom").grid(row=0, column=0, sticky="w")
-        ttk.Entry(form, textvariable=self.account_name_var, width=25).grid(row=0, column=1, padx=5)
+        name_entry = ttk.Entry(form, textvariable=self.account_name_var, width=25)
+        name_entry.grid(row=0, column=1, padx=5)
         ttk.Label(form, text="Type (courant, epargne...)").grid(row=0, column=2, sticky="w")
-        ttk.Entry(form, textvariable=self.account_type_var, width=20).grid(row=0, column=3, padx=5)
+        type_entry = ttk.Entry(form, textvariable=self.account_type_var, width=20)
+        type_entry.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Solde de depart").grid(row=0, column=4, sticky="w")
-        ttk.Entry(form, textvariable=self.account_balance_var, width=12).grid(row=0, column=5, padx=5)
+        balance_entry = ttk.Entry(form, textvariable=self.account_balance_var, width=12)
+        balance_entry.grid(row=0, column=5, padx=5)
         ttk.Button(form, text="Ajouter le compte", command=self._add_account).grid(row=0, column=6, padx=5)
+        # Entree valide le formulaire depuis n'importe lequel de ses champs
+        # (audit D33), a l'image du bouton "Ajouter le compte" - lie
+        # individuellement sur chaque champ (pas sur `form`, qui ne fait
+        # jamais partie des bindtags par defaut d'un widget qu'il contient :
+        # verifie empiriquement, seuls le widget lui-meme, sa classe, le
+        # Toplevel/fenetre racine qui le contient et "all" recoivent les
+        # evenements clavier non consommes).
+        for field in (name_entry, type_entry, balance_entry):
+            field.bind("<Return>", lambda e: self._add_account())
 
         columns = ("id", "name", "type", "balance", "cleared_balance", "archived")
         self.accounts_tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
@@ -345,6 +362,13 @@ class EnveloppeApp:
         ]:
             self.accounts_tree.heading(col, text=label)
             self.accounts_tree.column(col, width=width, anchor="w")
+        # Meme convention de coloration que le tableau Budget (tag
+        # "overspent", _build_budget_tab) pour un compte a decouvert (audit
+        # D37) : un solde negatif y est deja mis en evidence en rouge, mais
+        # rien n'existait cote Comptes - un compte a decouvert (au moins
+        # aussi grave qu'une enveloppe en depassement) s'affichait dans le
+        # meme style neutre qu'un solde positif, sans signal visuel.
+        self.accounts_tree.tag_configure("negative", foreground="#B00020")
         self.accounts_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
 
         actions = ttk.Frame(frame)
@@ -372,12 +396,13 @@ class EnveloppeApp:
     def _refresh_accounts(self):
         self.accounts_tree.delete(*self.accounts_tree.get_children())
         for account in self.db.list_accounts(include_archived=True):
+            balance = self.db.account_balance(account["id"])
             self.accounts_tree.insert("", END, iid=str(account["id"]), values=(
                 account["id"], account["name"], account["type"],
-                bg.format_amount(self.db.account_balance(account["id"])),
+                bg.format_amount(balance),
                 bg.format_amount(self.db.account_cleared_balance(account["id"])),
                 "Oui" if account["archived"] else "Non",
-            ))
+            ), tags=("negative",) if balance < 0 else ())
         self._refresh_transaction_account_choices()
 
     def _toggle_account_archived(self):
@@ -404,12 +429,19 @@ class EnveloppeApp:
         self.category_goal_var = StringVar()
 
         ttk.Label(form, text="Nom de la categorie").grid(row=0, column=0, sticky="w")
-        ttk.Entry(form, textvariable=self.category_name_var, width=25).grid(row=0, column=1, padx=5)
+        name_entry = ttk.Entry(form, textvariable=self.category_name_var, width=25)
+        name_entry.grid(row=0, column=1, padx=5)
         ttk.Label(form, text="Groupe (optionnel)").grid(row=0, column=2, sticky="w")
-        ttk.Entry(form, textvariable=self.category_group_var, width=20).grid(row=0, column=3, padx=5)
+        group_entry = ttk.Entry(form, textvariable=self.category_group_var, width=20)
+        group_entry.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Objectif d'epargne (optionnel)").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.category_goal_var, width=12).grid(row=1, column=1, sticky="w", pady=(5, 0))
+        goal_entry = ttk.Entry(form, textvariable=self.category_goal_var, width=12)
+        goal_entry.grid(row=1, column=1, sticky="w", pady=(5, 0))
         ttk.Button(form, text="Ajouter la categorie", command=self._add_category).grid(row=1, column=4, pady=(5, 0))
+        # Entree valide le formulaire depuis n'importe lequel de ses champs
+        # (audit D33).
+        for field in (name_entry, group_entry, goal_entry):
+            field.bind("<Return>", lambda e: self._add_category())
 
         columns = ("id", "group", "name", "goal", "archived")
         self.categories_tree = ttk.Treeview(frame, columns=columns, show="headings", height=14)
@@ -690,6 +722,13 @@ class EnveloppeApp:
         buttons.grid(row=5, column=0, columnspan=2, pady=10)
         ttk.Button(buttons, text="Deplacer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+        # Entree valide, Echap annule (audit D33) - lies sur le Toplevel
+        # plutot que sur un champ precis : un KeyPress non consomme par le
+        # widget qui a le focus (Entry/Combobox readonly, verifie
+        # empiriquement) remonte jusqu'au binding du Toplevel qui le
+        # contient, donc actif quel que soit le champ en cours de saisie.
+        dialog.bind("<Return>", lambda e: on_save())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     def _edit_budget_entry(self, event=None):
         selection = self.budget_tree.selection()
@@ -728,13 +767,23 @@ class EnveloppeApp:
         self.tx_category_combo = ttk.Combobox(form, textvariable=self.tx_category_var, width=20, state="readonly")
         self.tx_category_combo.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Date (AAAA-MM-JJ)").grid(row=0, column=4, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_date_var, width=12).grid(row=0, column=5, padx=5)
+        date_entry = ttk.Entry(form, textvariable=self.tx_date_var, width=12)
+        date_entry.grid(row=0, column=5, padx=5)
 
         ttk.Label(form, text="Beneficiaire").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.tx_payee_var, width=25).grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
+        payee_entry = ttk.Entry(form, textvariable=self.tx_payee_var, width=25)
+        payee_entry.grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
         ttk.Label(form, text="Montant (negatif = depense)").grid(row=1, column=3, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.tx_amount_var, width=12).grid(row=1, column=4, pady=(5, 0))
+        amount_entry = ttk.Entry(form, textvariable=self.tx_amount_var, width=12)
+        amount_entry.grid(row=1, column=4, pady=(5, 0))
         ttk.Button(form, text="Ajouter", command=self._add_transaction).grid(row=1, column=5, pady=(5, 0))
+        # Entree valide le formulaire d'ajout de transaction depuis
+        # n'importe lequel de ses champs (audit D33 - priorite : c'est le
+        # geste de saisie le plus repete de l'usage quotidien de l'app).
+        for field in (
+            self.tx_account_combo, self.tx_category_combo, date_entry, payee_entry, amount_entry,
+        ):
+            field.bind("<Return>", lambda e: self._add_transaction())
 
         filter_frame = ttk.Frame(frame)
         filter_frame.pack(fill=X, padx=10)
@@ -880,6 +929,9 @@ class EnveloppeApp:
         buttons.grid(row=3, column=0, columnspan=3, pady=10)
         ttk.Button(buttons, text="Enregistrer le fractionnement", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+        # Entree valide, Echap annule (audit D33).
+        dialog.bind("<Return>", lambda e: on_save())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     def _export_transactions_csv(self):
         from tkinter import filedialog
@@ -1133,6 +1185,9 @@ class EnveloppeApp:
         buttons.grid(row=5, column=0, columnspan=2, pady=10)
         ttk.Button(buttons, text="Effectuer le virement", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+        # Entree valide, Echap annule (audit D33).
+        dialog.bind("<Return>", lambda e: on_save())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     def _edit_transaction(self, event=None):
         selection = self.transactions_tree.selection()
@@ -1252,6 +1307,9 @@ class EnveloppeApp:
         buttons.grid(row=5, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(buttons, text="Enregistrer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
+        # Entree valide, Echap annule (audit D33).
+        dialog.bind("<Return>", lambda e: on_save())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
 
     # -- onglet Recurrentes -----------------------------------------------------
 
@@ -1278,18 +1336,28 @@ class EnveloppeApp:
         self.rec_category_combo = ttk.Combobox(form, textvariable=self.rec_category_var, width=20, state="readonly")
         self.rec_category_combo.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Frequence").grid(row=0, column=4, sticky="w")
-        ttk.Combobox(
+        frequency_combo = ttk.Combobox(
             form, textvariable=self.rec_frequency_var, width=14, state="readonly",
             values=list(self._RECURRING_FREQUENCY_LABELS.values()),
-        ).grid(row=0, column=5, padx=5)
+        )
+        frequency_combo.grid(row=0, column=5, padx=5)
 
         ttk.Label(form, text="Beneficiaire").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.rec_payee_var, width=25).grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
+        payee_entry = ttk.Entry(form, textvariable=self.rec_payee_var, width=25)
+        payee_entry.grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
         ttk.Label(form, text="Montant (negatif = depense)").grid(row=1, column=3, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.rec_amount_var, width=12).grid(row=1, column=4, pady=(5, 0))
+        amount_entry = ttk.Entry(form, textvariable=self.rec_amount_var, width=12)
+        amount_entry.grid(row=1, column=4, pady=(5, 0))
         ttk.Label(form, text="Premiere echeance (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", pady=(5, 0))
-        ttk.Entry(form, textvariable=self.rec_date_var, width=12).grid(row=2, column=1, sticky="w", pady=(5, 0))
+        date_entry = ttk.Entry(form, textvariable=self.rec_date_var, width=12)
+        date_entry.grid(row=2, column=1, sticky="w", pady=(5, 0))
         ttk.Button(form, text="Ajouter", command=self._add_recurring).grid(row=2, column=5, pady=(5, 0))
+        # Entree valide le formulaire depuis n'importe lequel de ses champs
+        # (audit D33).
+        for field in (
+            self.rec_account_combo, self.rec_category_combo, frequency_combo, payee_entry, amount_entry, date_entry,
+        ):
+            field.bind("<Return>", lambda e: self._add_recurring())
 
         columns = ("id", "next_date", "frequency", "account", "payee", "category", "amount")
         self.recurring_tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)

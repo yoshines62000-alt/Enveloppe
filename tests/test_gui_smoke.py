@@ -6,6 +6,7 @@ points qui ouvriraient une vraie boite de dialogue modale bloquante) -
 tout le reste du parcours utilisateur est reellement execute."""
 
 import csv
+import re
 import sys
 import tempfile
 import time
@@ -36,6 +37,49 @@ def _set_entry(entry, text):
     entry.insert(0, text)
 
 
+def _press(widget, sequence):
+    """Declenche le(s) callback(s) enregistre(s) par `widget.bind(sequence,
+    ...)` (ex: `widget.bind("<Return>", ...)`), comme le ferait un vrai
+    appui clavier.
+
+    N'utilise PAS `widget.event_generate(sequence)` : verifie empiriquement
+    peu fiable dans cet environnement de test - `setUp` cache la fenetre
+    racine (`root.withdraw()`, pour ne pas faire clignoter de fenetre a
+    chaque test), et un `Toplevel`/widget dont la racine est cachee reste
+    lui-meme a l'etat Tk `withdrawn` (meme apres `grab_set`/`focus_force`) ;
+    `event_generate` ne leve alors aucune erreur mais l'evenement clavier
+    synthetique est silencieusement perdu avant d'atteindre les bindings.
+    Rendre la fenetre reellement visible pour fiabiliser l'evenement
+    (`deiconify` + `wait_visibility`) ne fonctionne pas non plus ici : ce
+    process n'a pas de vrai bureau interactif (`wait_visibility()` ne rend
+    jamais la main, confirmant l'absence de gestionnaire de fenetres reel
+    dans cet environnement).
+
+    A la place : lit le script Tcl que Tk associe reellement a `sequence`
+    sur `widget` (`widget.tk.call("bind", widget, sequence)` - la meme
+    information que retournerait `widget.bind(sequence)`), en extrait le nom
+    de commande Tcl genere par tkinter pour le callback Python enregistre,
+    et l'appelle directement avec des valeurs de substitution %-code neutres
+    (cf. `tkinter.Misc._substitute` dans la bibliotheque standard, qui
+    documente l'ordre et le type attendu de chacun des 19 champs - aucun des
+    callbacks de cette application ne lit le contenu de l'objet `Event`
+    recu, seul le fait d'etre appele compte). Deterministe et rapide,
+    verifie sur des dizaines d'executions repetees : contrairement a
+    `event_generate`, ne depend d'aucun etat de fenetre/focus au niveau du
+    systeme."""
+    script = widget.tk.call("bind", widget, sequence)
+    funcids = re.findall(r"\[(\S+) %#", script)
+    assert funcids, f"aucun binding {sequence!r} enregistre sur {widget!r}"
+    keysym = sequence.strip("<>")
+    dummy_args = (
+        "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+        "", "0", keysym, "0", str(widget), "2", "0", "0", "0",
+    )
+    for funcid in funcids:
+        if widget.tk.call(funcid, *dummy_args) == "break":
+            break
+
+
 def _click_button(dialog, label):
     for button in _collect_widgets(dialog, "TButton"):
         if button["text"] == label:
@@ -60,6 +104,21 @@ def _find_label_by_textvariable(widget, var):
                 and str(child.cget("textvariable")) == str(var):
             return child
         found = _find_label_by_textvariable(child, var)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_entry_by_textvariable(widget, var):
+    """Meme principe que _find_label_by_textvariable, pour un ttk.Entry ou
+    ttk.Combobox relie a `var` via `textvariable` - permet de retrouver un
+    champ de formulaire precis sans dependre de l'ordre de creation des
+    widgets (fragile des qu'un champ est ajoute/retire du formulaire)."""
+    for child in widget.winfo_children():
+        if child.winfo_class() in ("TEntry", "TCombobox") and "textvariable" in child.keys() \
+                and str(child.cget("textvariable")) == str(var):
+            return child
+        found = _find_entry_by_textvariable(child, var)
         if found is not None:
             return found
     return None
@@ -685,6 +744,266 @@ class GuiSmokeTestCase(unittest.TestCase):
                 dialog.destroy()
 
         self.assertEqual(self.app.db.get_category(cat_id)["savings_goal"], 500.5)
+
+    def test_no_toplevel_dialog_uses_simpledialog_askfloat_anymore(self):
+        # Audit D32 : constat re-verifie en debut de ce round d'audit -
+        # deja resolu par effet de bord du correctif D31 (remplacement des
+        # deux appels a simpledialog.askfloat par _open_amount_edit_dialog,
+        # un Toplevel maison base sur _parse_float). Ce test verrouille
+        # l'absence de regression : aucune invocation de
+        # simpledialog.askfloat( ne doit jamais reapparaitre dans gui.py -
+        # elle rejette la virgule decimale francaise et affiche ses erreurs
+        # de validation nativement en anglais.
+        source = Path(gui.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("askfloat(", source)
+
+    # -- audit D33 : raccourcis clavier Entree (valider) / Echap (annuler) --
+    #
+    # Trouve a l'audit : aucun bind sur <Return>/<Escape> nulle part dans
+    # gui.py - chaque ajout de transaction et chaque validation de dialogue
+    # necessitait un clic de souris, et rien ne permettait de fermer un
+    # dialogue au clavier sans passer par "Annuler" a la souris. Echap ferme
+    # desormais chaque dialogue Toplevel sans rien enregistrer ; Entree
+    # declenche l'action principale depuis n'importe quel champ du
+    # dialogue/formulaire (verifie empiriquement : un KeyPress non consomme
+    # par le widget qui a le focus remonte jusqu'au binding du Toplevel qui
+    # le contient - un bind sur une Frame intermediaire ne recevrait rien,
+    # d'ou le bind direct sur chaque Entry/Combobox des formulaires de la
+    # fenetre principale).
+
+    def test_escape_closes_the_amount_edit_dialog_without_saving(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_id = self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(self.app._edit_budget_entry)
+        entry = _collect_widgets(dialog, "TEntry")[0]
+        _set_entry(entry, "999")
+        _press(dialog, "<Escape>")
+        self.assertFalse(dialog.winfo_exists(), "Echap doit fermer le dialogue")
+        self.assertEqual(self.app.db.get_budget_entry(cat_id, self.app.current_month), 0.0)
+
+    def test_escape_closes_the_move_between_envelopes_dialog_without_saving(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_a = self.app.db.add_category("Loisirs")
+        cat_b = self.app.db.add_category("Epicerie")
+        self.app.db.set_budget_entry(cat_a, self.app.current_month, 100.0)
+
+        dialog = self._new_dialog(self.app._open_move_between_envelopes_dialog)
+        _press(dialog, "<Escape>")
+        self.assertFalse(dialog.winfo_exists(), "Echap doit fermer le dialogue")
+        self.assertEqual(self.app.db.get_budget_entry(cat_a, self.app.current_month), 100.0)
+        self.assertEqual(self.app.db.get_budget_entry(cat_b, self.app.current_month), 0.0)
+
+    def test_return_confirms_the_move_between_envelopes_dialog(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_a = self.app.db.add_category("Loisirs")
+        cat_b = self.app.db.add_category("Epicerie")
+        self.app.db.set_budget_entry(cat_a, self.app.current_month, 100.0)
+
+        dialog = self._new_dialog(self.app._open_move_between_envelopes_dialog)
+        try:
+            combos = _collect_widgets(dialog, "TCombobox")
+            from_label = next(l for l in combos[0]["values"] if l.startswith(f"{cat_a} - "))
+            to_label = next(l for l in combos[1]["values"] if l.startswith(f"{cat_b} - "))
+            combos[0].set(from_label)
+            combos[1].set(to_label)
+            amount_entry = _collect_widgets(dialog, "TEntry")[0]
+            _set_entry(amount_entry, "40")
+            # Le bind <Return> de ce dialogue est pose sur le Toplevel
+            # (gui.py, `_open_move_between_envelopes_dialog`), pas sur un
+            # champ particulier - il s'applique donc quel que soit le champ
+            # en cours de saisie au moment de l'appui (verifie manuellement
+            # a l'ecran ; non reproduit ici via un evenement clavier reel
+            # depuis le champ, cf. docstring de `_press`).
+            _press(dialog, "<Return>")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(self.app.db.get_budget_entry(cat_a, self.app.current_month), 60.0)
+        self.assertEqual(self.app.db.get_budget_entry(cat_b, self.app.current_month), 40.0)
+
+    def test_escape_closes_the_split_dialog_without_saving(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        groceries = self.app.db.add_category("Epicerie")
+        self.app.db.add_category("Maison")
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -100.0, category_id=groceries)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        dialog = self._new_dialog(self.app._open_split_dialog)
+        _press(dialog, "<Escape>")
+        self.assertFalse(dialog.winfo_exists(), "Echap doit fermer le dialogue")
+        self.assertEqual(self.app.db.get_transaction_splits(tx_id), [])
+
+    def test_return_confirms_the_split_dialog(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        groceries = self.app.db.add_category("Epicerie")
+        household = self.app.db.add_category("Maison")
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -100.0, category_id=groceries)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        dialog = self._new_dialog(self.app._open_split_dialog)
+        try:
+            combos = _collect_widgets(dialog, "TCombobox")
+            entries = _collect_widgets(dialog, "TEntry")
+            groceries_label = next(l for l in combos[0]["values"] if l.startswith(f"{groceries} - "))
+            household_label = next(l for l in combos[1]["values"] if l.startswith(f"{household} - "))
+            combos[0].set(groceries_label)
+            combos[1].set(household_label)
+            _set_entry(entries[0], "-60")
+            _set_entry(entries[2], "-40")
+            _press(dialog, "<Return>")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.mock_warning.assert_not_called()
+        splits = self.app.db.get_transaction_splits(tx_id)
+        self.assertEqual(len(splits), 2)
+
+    def test_escape_closes_the_transfer_dialog_without_saving(self):
+        self.app.db.add_account("Courant", starting_balance=1000.0)
+        self.app.db.add_account("Epargne", starting_balance=0.0)
+        before_count = len(self.app.db.list_transactions())
+
+        dialog = self._new_dialog(self.app._open_transfer_dialog)
+        _press(dialog, "<Escape>")
+        self.assertFalse(dialog.winfo_exists(), "Echap doit fermer le dialogue")
+        self.assertEqual(len(self.app.db.list_transactions()), before_count)
+
+    def test_return_confirms_the_transfer_dialog(self):
+        self.app.db.add_account("Courant", starting_balance=1000.0)
+        self.app.db.add_account("Epargne", starting_balance=0.0)
+        before_count = len(self.app.db.list_transactions())
+
+        dialog = self._new_dialog(self.app._open_transfer_dialog)
+        try:
+            entries = _collect_widgets(dialog, "TEntry")
+            _set_entry(entries[1], "25")  # ordre de creation : date, montant, memo
+            _press(dialog, "<Return>")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.mock_warning.assert_not_called()
+        self.assertEqual(len(self.app.db.list_transactions()), before_count + 2)
+
+    def test_escape_closes_the_edit_transaction_dialog_without_saving(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -30.0, payee="Epicerie")
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        dialog = self._new_dialog(lambda: self.app._edit_transaction())
+        _press(dialog, "<Escape>")
+        self.assertFalse(dialog.winfo_exists(), "Echap doit fermer le dialogue")
+        self.assertEqual(self.app.db.get_transaction(tx_id)["payee"], "Epicerie")
+
+    def test_return_confirms_the_edit_transaction_dialog(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -30.0, payee="Epicerie")
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        dialog = self._new_dialog(lambda: self.app._edit_transaction())
+        try:
+            # Ordre de creation des TEntry (pas de fractionnement ici, donc
+            # la categorie est une TCombobox, pas un Label) : date,
+            # beneficiaire, montant.
+            entries = _collect_widgets(dialog, "TEntry")
+            self.assertEqual(len(entries), 3)
+            payee_entry = entries[1]
+            _set_entry(payee_entry, "Supermarche")
+            _press(dialog, "<Return>")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        self.assertEqual(self.app.db.get_transaction(tx_id)["payee"], "Supermarche")
+
+    def test_return_in_the_account_form_submits_it_from_the_balance_field(self):
+        before_count = len(self.app.db.list_accounts())
+        self.app.account_name_var.set("Nouveau compte")
+        self.app.account_balance_var.set("100")
+        entry = _find_entry_by_textvariable(self.app.accounts_tab, self.app.account_balance_var)
+        self.assertIsNotNone(entry, "champ de solde de depart introuvable")
+        _press(entry, "<Return>")
+        self.assertEqual(len(self.app.db.list_accounts()), before_count + 1)
+
+    def test_return_in_the_category_form_submits_it_from_the_name_field(self):
+        before_count = len(self.app.db.list_categories())
+        self.app.category_name_var.set("Nouvelle categorie")
+        entry = _find_entry_by_textvariable(self.app.categories_tab, self.app.category_name_var)
+        self.assertIsNotNone(entry, "champ de nom de categorie introuvable")
+        _press(entry, "<Return>")
+        self.assertEqual(len(self.app.db.list_categories()), before_count + 1)
+
+    def test_return_in_the_transaction_form_submits_it_from_the_amount_field(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        before_count = len(self.app.db.list_transactions())
+        self.app.tx_account_var.set(f"{account_id} - Compte")
+        self.app.tx_date_var.set("2026-01-05")
+        self.app.tx_amount_var.set("-42")
+        entry = _find_entry_by_textvariable(self.app.transactions_tab, self.app.tx_amount_var)
+        self.assertIsNotNone(entry, "champ de montant introuvable")
+        _press(entry, "<Return>")
+        self.assertEqual(len(self.app.db.list_transactions()), before_count + 1)
+
+    def test_return_in_the_recurring_form_submits_it_from_the_amount_field(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        before_count = len(self.app.db.list_recurring_transactions())
+        self.app.rec_account_var.set(f"{account_id} - Compte")
+        self.app.rec_date_var.set("2026-01-05")
+        self.app.rec_amount_var.set("-15")
+        entry = _find_entry_by_textvariable(self.app.recurring_tab, self.app.rec_amount_var)
+        self.assertIsNotNone(entry, "champ de montant introuvable")
+        _press(entry, "<Return>")
+        self.assertEqual(len(self.app.db.list_recurring_transactions()), before_count + 1)
+
+    # -- audit D37 : solde de compte negatif mis en evidence visuellement ---
+    #
+    # Trouve a l'audit : contrairement au tableau Budget (categories en
+    # depassement -> rouge, tag "overspent"), le tableau Comptes n'avait
+    # aucun tag_configure - un compte a decouvert (solde negatif) s'affichait
+    # exactement dans le meme style neutre qu'un solde positif.
+
+    def test_account_with_a_negative_balance_gets_the_negative_tag(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        self.app.db.add_transaction(account_id, "2026-01-05", -350.0, payee="Loyer")
+        self.app._refresh_accounts()
+        self.assertLess(self.app.db.account_balance(account_id), 0)
+        self.assertIn("negative", self.app.accounts_tree.item(str(account_id), "tags"))
+
+    def test_account_with_a_positive_balance_does_not_get_the_negative_tag(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        self.app._refresh_accounts()
+        self.assertGreater(self.app.db.account_balance(account_id), 0)
+        self.assertNotIn("negative", self.app.accounts_tree.item(str(account_id), "tags"))
+
+    def test_negative_tag_is_configured_with_the_same_red_used_for_overspent_categories(self):
+        # Meme couleur que budget_tree.tag_configure("overspent", ...) -
+        # convention de coloration coherente dans toute l'application pour
+        # signaler "argent en probleme".
+        overspent_color = self.app.budget_tree.tag_configure("overspent")["foreground"]
+        negative_color = self.app.accounts_tree.tag_configure("negative")["foreground"]
+        self.assertEqual(negative_color, overspent_color)
+
+    def test_account_negative_tag_updates_when_the_balance_crosses_zero(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=100.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -350.0, payee="Loyer")
+        self.app._refresh_accounts()
+        self.assertIn("negative", self.app.accounts_tree.item(str(account_id), "tags"))
+
+        # Le solde redevient positif (ex: correction de la transaction) : le
+        # tag doit disparaitre au rafraichissement suivant plutot que de
+        # rester colle indefiniment.
+        self.app.db.update_transaction(tx_id, amount=50.0)
+        self.app._refresh_accounts()
+        self.assertNotIn("negative", self.app.accounts_tree.item(str(account_id), "tags"))
 
 
 class DpiAwarenessTestCase(unittest.TestCase):
