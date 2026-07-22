@@ -43,6 +43,27 @@ def _click_button(dialog, label):
     raise AssertionError(f"Bouton introuvable : {label!r}")
 
 
+def _find_button(widget, label):
+    for button in _collect_widgets(widget, "TButton"):
+        if button["text"] == label:
+            return button
+    return None
+
+
+def _find_label_by_textvariable(widget, var):
+    """Cherche recursivement un ttk.Label relie a `var` (StringVar) via son
+    option `textvariable` - plus fiable qu'une recherche par texte affiche,
+    qui change au fil du temps (montants, mois...)."""
+    for child in widget.winfo_children():
+        if child.winfo_class() == "TLabel" and "textvariable" in child.keys() \
+                and str(child.cget("textvariable")) == str(var):
+            return child
+        found = _find_label_by_textvariable(child, var)
+        if found is not None:
+            return found
+    return None
+
+
 class GuiSmokeTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -128,6 +149,76 @@ class GuiSmokeTestCase(unittest.TestCase):
             str(w.cget("textvariable")) for w in self.root.winfo_children() if w.winfo_class() == "TLabel"
         }
         self.assertIn(str(self.app.overspent_summary_var), root_labels_vars)
+
+    # -- audit D24/D25/D26 : minsize + elements critiques jamais tronques ----
+    #
+    # D24 : aucun root.minsize() n'existait, la fenetre pouvait etre reduite
+    # a n'importe quelle taille. D25 : consequence directe, l'indicateur
+    # "Reste a assigner" (onglet Budget) sortait entierement du cadre visible
+    # a 620x420 - une taille pourtant raisonnable, alors que le README le
+    # decrit comme "toujours visible". D26 : le bouton "Pointer / depointer"
+    # (onglet Transactions) s'affichait tronque en "Poin" des la taille de
+    # fenetre PAR DEFAUT (1000x680), avant tout redimensionnement. Les tests
+    # ci-dessous verrouillent les trois a la fois a la taille par defaut ET a
+    # root.minsize() (la plus petite taille que l'utilisateur peut encore
+    # atteindre).
+
+    def _select_tab(self, tab):
+        notebook = next(w for w in self.root.winfo_children() if w.winfo_class() == "TNotebook")
+        notebook.select(tab)
+        self.root.update_idletasks()
+        self.root.update()
+
+    def _shrink_to_minsize(self):
+        min_w, min_h = self.root.wm_minsize()
+        self.root.geometry(f"{min_w}x{min_h}")
+        self.root.update_idletasks()
+        self.root.update()
+
+    def test_root_window_has_a_minimum_size_that_keeps_critical_elements_readable(self):
+        # Valeurs mesurees (winfo_reqwidth) pour contenir la ligne de
+        # navigation du Budget et la barre d'action des Transactions sans
+        # troncature - voir gui.py, EnveloppeApp.__init__.
+        min_w, min_h = self.root.wm_minsize()
+        self.assertGreaterEqual(min_w, 900)
+        self.assertGreaterEqual(min_h, 600)
+
+    def test_ready_to_assign_indicator_is_fully_onscreen_at_default_window_size(self):
+        self._select_tab(self.app.budget_tab)
+        label = _find_label_by_textvariable(self.app.budget_tab, self.app.ready_to_assign_var)
+        self.assertIsNotNone(label, "le label 'Reste a assigner' est introuvable")
+        self.assertGreater(label.winfo_width(), 0, "l'indicateur 'Reste a assigner' a une largeur nulle (invisible)")
+        right_edge = (label.winfo_rootx() - self.root.winfo_rootx()) + label.winfo_width()
+        self.assertLessEqual(right_edge, self.root.winfo_width(), "l'indicateur deborde hors de la fenetre")
+        self.assertIn("Reste a assigner", self.app.ready_to_assign_var.get())
+
+    def test_ready_to_assign_indicator_is_fully_onscreen_at_minimum_window_size(self):
+        self._shrink_to_minsize()
+        self._select_tab(self.app.budget_tab)
+        label = _find_label_by_textvariable(self.app.budget_tab, self.app.ready_to_assign_var)
+        self.assertIsNotNone(label, "le label 'Reste a assigner' est introuvable")
+        self.assertGreater(label.winfo_width(), 0, "l'indicateur 'Reste a assigner' a une largeur nulle (invisible)")
+        right_edge = (label.winfo_rootx() - self.root.winfo_rootx()) + label.winfo_width()
+        self.assertLessEqual(right_edge, self.root.winfo_width(), "l'indicateur deborde hors de la fenetre")
+
+    def test_pointer_depointer_button_shows_its_full_label_at_default_window_size(self):
+        self._select_tab(self.app.transactions_tab)
+        button = _find_button(self.app.transactions_tab, "Pointer / depointer")
+        self.assertIsNotNone(button, "le bouton 'Pointer / depointer' est introuvable")
+        self.assertGreaterEqual(
+            button.winfo_width(), button.winfo_reqwidth(),
+            "le bouton 'Pointer / depointer' recoit moins que sa largeur demandee : texte tronque",
+        )
+
+    def test_pointer_depointer_button_shows_its_full_label_at_minimum_window_size(self):
+        self._shrink_to_minsize()
+        self._select_tab(self.app.transactions_tab)
+        button = _find_button(self.app.transactions_tab, "Pointer / depointer")
+        self.assertIsNotNone(button, "le bouton 'Pointer / depointer' est introuvable")
+        self.assertGreaterEqual(
+            button.winfo_width(), button.winfo_reqwidth(),
+            "le bouton 'Pointer / depointer' recoit moins que sa largeur demandee : texte tronque",
+        )
 
     # -- item 3 : virgule decimale francaise dans les dialogues --------------
 

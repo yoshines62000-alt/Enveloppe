@@ -39,6 +39,17 @@ class EnveloppeApp:
         self.root = root
         self.root.title(APP_TITLE)
         self.root.geometry("1000x680")
+        # Sans minsize, la fenetre pouvait etre reduite a n'importe quelle
+        # taille (verifie jusqu'a 400x300 lors de l'audit) : les intitules
+        # d'onglets se tronquaient, et surtout l'indicateur "Reste a
+        # assigner" (onglet Budget) pouvait sortir entierement du cadre
+        # visible des ~620x420 de large. 950x620 est une taille mesuree
+        # (winfo_reqwidth) pour que tous les elements critiques (onglets,
+        # indicateur "Reste a assigner", boutons d'action dont "Pointer /
+        # depointer") restent entierement lisibles avec de la marge, sans
+        # troncature - voir tests/test_gui_smoke.py pour la verification
+        # verrouillee.
+        self.root.minsize(950, 620)
 
         self.db = Database(_data_dir() / "enveloppe.sqlite")
         self.current_month = bg.current_month()
@@ -354,7 +365,7 @@ class EnveloppeApp:
     def _build_budget_tab(self):
         frame = self.budget_tab
         top = ttk.Frame(frame)
-        top.pack(fill=X, padx=10, pady=10)
+        top.pack(fill=X, padx=10, pady=(10, 0))
 
         ttk.Button(top, text="< Mois precedent", command=lambda: self._change_month(-1)).pack(side=LEFT)
         self.budget_month_var = StringVar()
@@ -363,9 +374,24 @@ class EnveloppeApp:
         ttk.Button(top, text="Copier le budget du mois precedent", command=self._copy_previous_month_budget).pack(side=LEFT, padx=15)
         ttk.Button(top, text="Deplacer entre enveloppes...", command=self._open_move_between_envelopes_dialog).pack(side=LEFT)
 
+        # "Reste a assigner" sur sa PROPRE ligne (audit D25) : le README le
+        # decrit comme un indicateur "toujours visible", mais tant qu'il
+        # cohabitait avec les boutons de navigation sur une seule ligne
+        # (side=LEFT pour les boutons, side=RIGHT pour lui), pack() ne
+        # renvoie jamais a la ligne - des que la largeur cumulee depassait
+        # celle de la fenetre, cet indicateur (le dernier empaquete a
+        # droite) sortait purement et simplement du cadre visible, y
+        # compris a des tailles de fenetre raisonnables (620x420). En le
+        # placant sur sa propre ligne pleine largeur, il ne concurrence
+        # plus jamais les boutons pour l'espace horizontal et reste visible
+        # tant que la fenetre depasse ~220px de large (voir aussi
+        # root.minsize() dans __init__, qui empeche de toute facon de
+        # descendre sous une largeur ou l'un ou l'autre poserait probleme).
+        ready_row = ttk.Frame(frame)
+        ready_row.pack(fill=X, padx=10, pady=(4, 10))
         self.ready_to_assign_var = StringVar()
-        ready_label = ttk.Label(top, textvariable=self.ready_to_assign_var, font=("Segoe UI", 12, "bold"))
-        ready_label.pack(side=RIGHT, padx=10)
+        ready_label = ttk.Label(ready_row, textvariable=self.ready_to_assign_var, font=("Segoe UI", 12, "bold"))
+        ready_label.pack(side=RIGHT)
 
         columns = ("group", "category", "budgeted", "activity", "available", "goal_progress")
         self.budget_tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
@@ -598,11 +624,24 @@ class EnveloppeApp:
         self.transactions_tree.pack(fill=BOTH, expand=True, padx=10, pady=(5, 5))
         self.transactions_tree.bind("<Double-1>", self._edit_transaction)
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill=X, padx=10, pady=(0, 10))
-        ttk.Label(actions, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
+        # Astuce + statut d'import sur leur PROPRE ligne, separee de la barre
+        # de boutons (audit D26) : quand ce texte cohabitait avec les 6
+        # boutons d'action sur une seule ligne pack()ee, leur largeur
+        # cumulee depassait deja l'espace disponible a la taille de fenetre
+        # PAR DEFAUT (1000x680) - le bouton "Pointer / depointer" (dernier
+        # empaquete a droite, donc le plus a gauche du groupe, colle contre
+        # le texte de gauche) recevait alors moins que sa largeur demandee
+        # et s'affichait tronque en "Poin". Deplacer ce texte hors de la
+        # ligne de boutons libere assez d'espace pour que tous les boutons
+        # d'action gardent leur libelle complet, y compris a root.minsize().
+        hint_row = ttk.Frame(frame)
+        hint_row.pack(fill=X, padx=10)
+        ttk.Label(hint_row, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
         self.import_status_var = StringVar(value="")
-        ttk.Label(actions, textvariable=self.import_status_var, foreground="#666").pack(side=LEFT, padx=(10, 0))
+        ttk.Label(hint_row, textvariable=self.import_status_var, foreground="#666").pack(side=LEFT, padx=(10, 0))
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill=X, padx=10, pady=(4, 10))
         ttk.Button(actions, text="Supprimer la transaction selectionnee", command=self._delete_transaction).pack(side=RIGHT)
         self.import_csv_button = ttk.Button(actions, text="Importer un CSV...", command=self._import_transactions_csv)
         self.import_csv_button.pack(side=RIGHT, padx=(0, 5))
