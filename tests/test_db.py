@@ -752,6 +752,83 @@ class RecurringTransactionTestCase(unittest.TestCase):
         template = self.db.list_recurring_transactions()[0]
         self.assertLessEqual(template["next_date"], (_datetime_module.date.today() + _datetime_module.timedelta(days=31)).isoformat())
 
+    def test_generate_due_never_generates_into_an_archived_account(self):
+        # Regression D2 de l'audit : reproduit le "loyer fantome" - un
+        # compte archive continuait auparavant a recevoir de nouvelles
+        # transactions recurrentes indefiniment, a chaque appel, sans
+        # aucun garde-fou ni avertissement.
+        rec_id = self.db.add_recurring_transaction(
+            self.account_id, "2026-01-01", -50.0, "monthly", payee="Loyer (ancien logement)",
+        )
+        self.db.update_account(self.account_id, archived=1)
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-07-15")
+        self.assertEqual(created_ids, [])
+        self.assertEqual(self.db.list_transactions(), [])
+        # next_date n'avance pas non plus : des que le compte est
+        # desarchive, les echeances manquees doivent pouvoir se rattraper
+        # normalement plutot que rester bloquees a la premiere echeance.
+        template = self.db.list_recurring_transactions()[0]
+        self.assertEqual(template["next_date"], "2026-01-01")
+        self.assertEqual(rec_id, template["id"])
+
+    def test_generate_due_never_generates_into_an_archived_category(self):
+        rec_id = self.db.add_recurring_transaction(
+            self.account_id, "2026-01-01", -50.0, "monthly", category_id=self.category_id,
+        )
+        self.db.update_category(self.category_id, archived=1)
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-07-15")
+        self.assertEqual(created_ids, [])
+        self.assertEqual(self.db.list_transactions(), [])
+        self.assertEqual(rec_id, self.db.list_recurring_transactions()[0]["id"])
+
+    def test_generate_due_resumes_normally_once_the_account_is_unarchived(self):
+        self.db.add_recurring_transaction(self.account_id, "2026-01-01", -50.0, "monthly")
+        self.db.update_account(self.account_id, archived=1)
+        self.db.generate_due_recurring_transactions(as_of="2026-03-15")
+        self.assertEqual(self.db.list_transactions(), [])
+
+        self.db.update_account(self.account_id, archived=0)
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-03-15")
+        # Rattrape les 3 echeances manquees d'un coup, exactement comme un
+        # modele ordinaire qui n'aurait jamais ete bloque (voir
+        # test_generate_due_catches_up_multiple_missed_occurrences).
+        self.assertEqual(len(created_ids), 3)
+
+    def test_generate_due_still_generates_for_unrelated_active_templates(self):
+        # La garde ne doit affecter QUE les modeles cibles sur un compte/
+        # categorie archive - un modele ordinaire, sur un autre compte,
+        # continue de generer normalement.
+        other_account_id = self.db.add_account("Livret A", starting_balance=0.0)
+        self.db.add_recurring_transaction(self.account_id, "2026-01-01", -50.0, "monthly")
+        self.db.add_recurring_transaction(other_account_id, "2026-01-01", 20.0, "monthly")
+        self.db.update_account(self.account_id, archived=1)
+        created_ids = self.db.generate_due_recurring_transactions(as_of="2026-01-15")
+        self.assertEqual(len(created_ids), 1)
+        tx = self.db.get_transaction(created_ids[0])
+        self.assertEqual(tx["account_id"], other_account_id)
+
+    def test_list_recurring_transactions_targeting_archived_reports_only_the_blocked_ones(self):
+        other_account_id = self.db.add_account("Livret A", starting_balance=0.0)
+        blocked_id = self.db.add_recurring_transaction(
+            self.account_id, "2026-01-01", -50.0, "monthly", payee="Loyer (ancien logement)",
+        )
+        self.db.add_recurring_transaction(other_account_id, "2026-01-01", -10.0, "monthly", payee="Toujours actif")
+        self.assertEqual(self.db.list_recurring_transactions_targeting_archived(), [])
+
+        self.db.update_account(self.account_id, archived=1)
+        blocked = self.db.list_recurring_transactions_targeting_archived()
+        self.assertEqual([t["id"] for t in blocked], [blocked_id])
+
+    def test_list_recurring_transactions_targeting_archived_ignores_inactive_templates(self):
+        rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -50.0, "monthly")
+        self.db.update_recurring_transaction(rec_id, active=0)
+        self.db.update_account(self.account_id, archived=1)
+        # list_recurring_transactions_targeting_archived s'appuie sur
+        # list_recurring_transactions() (actifs uniquement, par defaut) :
+        # un modele deja desactive n'a pas besoin d'etre signale, il ne
+        # generera de toute facon rien.
+        self.assertEqual(self.db.list_recurring_transactions_targeting_archived(), [])
+
     def test_delete_recurring_transaction_removes_it(self):
         rec_id = self.db.add_recurring_transaction(self.account_id, "2026-01-01", -800.0, "monthly")
         self.db.delete_recurring_transaction(rec_id)

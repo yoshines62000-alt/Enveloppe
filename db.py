@@ -611,13 +611,50 @@ class Database:
         day = min(anchor_day if anchor_day is not None else current.day, last_day)
         return _date(year, month, day).isoformat()
 
+    def _recurring_template_targets_archived(self, template) -> bool:
+        """True si le compte ou la categorie cible du modele recurrent
+        `template` est archive(e) - voir generate_due_recurring_transactions,
+        qui s'appuie dessus pour ne plus jamais generer silencieusement de
+        transaction dans un compte/categorie que l'utilisateur a considere
+        "termine" en l'archivant."""
+        account = self.get_account(template["account_id"])
+        if account is not None and account["archived"]:
+            return True
+        if template["category_id"] is not None:
+            category = self.get_category(template["category_id"])
+            if category is not None and category["archived"]:
+                return True
+        return False
+
+    def list_recurring_transactions_targeting_archived(self) -> list:
+        """Modeles recurrents ACTIFS dont le compte ou la categorie cible est
+        archive(e) - generate_due_recurring_transactions ne genere plus
+        jamais rien pour eux (voir ci-dessous), ce qui les rendrait sinon
+        invisibles : l'utilisateur ne recevrait plus aucune transaction
+        fantome, mais ne serait pas non plus informe qu'un modele recurrent
+        reste actif sans effet, cible sur un compte/categorie ferme(e) -
+        cette methode permet a l'IHM de le signaler explicitement plutot que
+        de laisser un silence ambigu (echeances a jour ? ou juste bloquees ?)."""
+        return [t for t in self.list_recurring_transactions() if self._recurring_template_targets_archived(t)]
+
     def generate_due_recurring_transactions(self, as_of: Optional[str] = None) -> list:
         """Cree une vraie transaction pour chaque echeance passee (ou du
         jour) de chaque modele actif, et avance next_date jusqu'a depasser
         `as_of` - en rattrapant plusieurs occurrences manquees d'un coup si
         l'application n'a pas ete ouverte depuis un moment (ex: 2 loyers
         mensuels manques generent bien 2 transactions, pas une seule).
-        Renvoie la liste des ids de transactions creees."""
+
+        Un modele dont le compte ou la categorie cible est archive(e) est
+        ignore entierement (aucune transaction generee, next_date non
+        avance) - bug trouve a l'audit : sans cette garde, un compte
+        archive ("j'archive = c'est termine, je n'y touche plus" du point
+        de vue de l'utilisateur) continuait a accumuler indefiniment des
+        transactions fantomes a chaque ouverture, faussant silencieusement
+        les soldes/le reste a assigner par rapport a ce que l'utilisateur
+        croit etre la realite. Voir list_recurring_transactions_targeting_
+        archived(), que l'IHM utilise pour avertir l'utilisateur au lieu de
+        rester silencieuse. Renvoie la liste des ids de transactions creees.
+        """
         if as_of is None:
             # date.today() (heure LOCALE), pas datetime.now(timezone.utc) :
             # toutes les autres dates "du jour" de l'application (mois
@@ -630,6 +667,8 @@ class Database:
             as_of = _date_cls.today().isoformat()
         created_ids = []
         for template in self.list_recurring_transactions():
+            if self._recurring_template_targets_archived(template):
+                continue
             next_date = template["next_date"]
             while next_date <= as_of:
                 new_id = self.add_transaction(

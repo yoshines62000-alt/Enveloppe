@@ -319,6 +319,116 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.assertEqual(len(self.app.db.list_transactions()), before_count)
         self.assertEqual(self.app.db.account_balance(account_id), 1000.0)
 
+    # -- audit D14 : avertissement avant d'editer une transaction pointee ---
+    #
+    # Trouve a l'audit : le dialogue d'edition standard s'ouvrait pour
+    # n'importe quelle transaction, y compris une transaction deja pointee
+    # (rapprochee avec le releve bancaire), sans aucun avertissement -
+    # le "Solde pointe" affiche pouvait donc silencieusement cesser de
+    # refleter la realite bancaire verifiee. Le correctif avertit (au lieu
+    # de bloquer) via un messagebox.askyesno avant d'ouvrir le dialogue.
+
+    def test_editing_a_cleared_transaction_asks_for_confirmation_first(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -30.0, payee="Epicerie", cleared=True)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        with patch("tkinter.messagebox.askyesno", return_value=True) as mock_yes:
+            dialog = self._new_dialog(lambda: self.app._edit_transaction())
+        try:
+            mock_yes.assert_called_once()
+            warning_text = mock_yes.call_args[0][1]
+            self.assertIn("pointee", warning_text.lower())
+            self.assertEqual(dialog.title(), "Modifier la transaction")
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+    def test_declining_the_cleared_transaction_warning_cancels_the_edit(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -30.0, payee="Epicerie", cleared=True)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        before = set(self.root.winfo_children())
+        with patch("tkinter.messagebox.askyesno", return_value=False) as mock_yes:
+            self.app._edit_transaction()
+        after = set(self.root.winfo_children()) - before
+        mock_yes.assert_called_once()
+        self.assertEqual(len(after), 0, "aucun dialogue d'edition ne doit s'ouvrir si l'utilisateur refuse")
+
+    def test_editing_an_uncleared_transaction_does_not_ask_for_confirmation(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=1000.0)
+        tx_id = self.app.db.add_transaction(account_id, "2026-01-05", -30.0, payee="Epicerie", cleared=False)
+        self.app._refresh_transactions()
+        self.app.transactions_tree.selection_set(str(tx_id))
+
+        with patch("tkinter.messagebox.askyesno") as mock_yes:
+            dialog = self._new_dialog(lambda: self.app._edit_transaction())
+        try:
+            mock_yes.assert_not_called()
+        finally:
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+    # -- audit D2 : transactions recurrentes vs compte/categorie archive ----
+    #
+    # Trouve a l'audit : generate_due_recurring_transactions continuait a
+    # generer des transactions dans un compte/categorie archive, a chaque
+    # ouverture, indefiniment et sans avertissement ("loyer fantome"). Le
+    # correctif (db.py) arrete la generation ; ces tests verrouillent que la
+    # GUI avertit bien l'utilisateur au lieu de rester silencieuse.
+
+    def test_generate_recurring_now_warns_when_a_template_targets_an_archived_account(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=0.0)
+        self.app.db.add_recurring_transaction(
+            account_id, "2026-01-01", -50.0, "monthly", payee="Loyer (ancien logement)",
+        )
+        self.app.db.update_account(account_id, archived=1)
+
+        self.app._generate_recurring_now()
+
+        self.mock_warning.assert_called_once()
+        message = self.mock_warning.call_args[0][1]
+        self.assertIn("archive", message.lower())
+        self.assertIn("Loyer (ancien logement)", message)
+        self.mock_info.assert_not_called()
+        self.assertEqual(self.app.db.list_transactions(), [])
+
+    def test_generate_recurring_now_shows_plain_info_when_nothing_is_archived(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=0.0)
+        self.app.db.add_recurring_transaction(account_id, "2026-01-01", -50.0, "monthly", payee="Loyer")
+
+        self.app._generate_recurring_now()
+
+        self.mock_info.assert_called_once()
+        self.mock_warning.assert_not_called()
+
+    def test_auto_generate_recurring_warns_at_startup_about_archived_targets_even_with_nothing_due(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=0.0)
+        # Echeance tres future : rien n'est du, mais le modele reste bloque
+        # par l'archivage - l'utilisateur doit quand meme en etre informe,
+        # pas seulement quand une generation reelle a lieu.
+        self.app.db.add_recurring_transaction(
+            account_id, "2099-01-01", -50.0, "monthly", payee="Loyer (ancien logement)",
+        )
+        self.app.db.update_account(account_id, archived=1)
+
+        self.app._auto_generate_recurring()
+
+        self.mock_warning.assert_called_once()
+        self.assertIn("archive", self.mock_warning.call_args[0][1].lower())
+
+    def test_auto_generate_recurring_stays_silent_when_nothing_is_due_and_nothing_is_archived(self):
+        account_id = self.app.db.add_account("Compte", starting_balance=0.0)
+        self.app.db.add_recurring_transaction(account_id, "2099-01-01", -50.0, "monthly")
+
+        self.app._auto_generate_recurring()
+
+        self.mock_info.assert_not_called()
+        self.mock_warning.assert_not_called()
+
     # -- optimisation audit Phase 3 : import CSV en arriere-plan ------------
 
     def _pump_until(self, condition, timeout=5.0):

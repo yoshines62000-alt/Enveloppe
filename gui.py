@@ -1020,6 +1020,23 @@ class EnveloppeApp:
                 "puis recreez-le pour le modifier.",
             )
             return
+        if tx["cleared"]:
+            # Trouve a l'audit : editer une transaction deja pointee
+            # (rapprochee avec le releve bancaire) ne declenchait aucun
+            # avertissement - le solde pointe continuait pourtant a inclure
+            # cette transaction, dont le montant/la date pouvait desormais
+            # ne plus correspondre a ce qui a ete verifie sur le releve,
+            # sans que rien ne le signale. On avertit plutot que de bloquer
+            # totalement l'edition (une correction de coquille apres coup
+            # reste un besoin legitime) - l'utilisateur choisit en
+            # connaissance de cause.
+            if not messagebox.askyesno(
+                APP_TITLE,
+                "Cette transaction est pointee (rapprochee avec votre releve bancaire).\n"
+                "La modifier peut fausser le solde pointe affiche.\n\n"
+                "Continuer quand meme ?",
+            ):
+                return
         existing_splits = self.db.get_transaction_splits(transaction_id)
         is_split = bool(existing_splits)
 
@@ -1218,32 +1235,68 @@ class EnveloppeApp:
         self.db.delete_recurring_transaction(int(selection[0]))
         self._refresh_recurring()
 
+    def _archived_recurring_warning_text(self) -> str:
+        """Message listant les modeles recurrents actifs cibles sur un
+        compte/categorie archive(e) (voir db.list_recurring_transactions_
+        targeting_archived) - ces modeles ne generent plus rien (voir
+        generate_due_recurring_transactions), mais restent actifs sans
+        que rien ne le signale ailleurs dans l'IHM ; ce message evite que
+        l'utilisateur ne le decouvre par hasard, bien plus tard."""
+        templates = self.db.list_recurring_transactions_targeting_archived()
+        if not templates:
+            return ""
+        plural = "s" if len(templates) > 1 else ""
+        lines = "\n".join(
+            f"  - {t['payee'] or '(sans beneficiaire)'} ({t['account_name']}"
+            f"{', ' + t['category_name'] if t['category_name'] else ''})"
+            for t in templates
+        )
+        return (
+            f"\n\n{len(templates)} modele{plural} recurrent{plural} actif{plural} cible{plural} sur un "
+            f"compte ou une categorie archive(e) - plus aucune transaction n'y sera generee tant qu'il "
+            f"reste archive :\n{lines}\n\nDesarchivez le compte/la categorie ou desactivez le modele pour "
+            "corriger cette situation."
+        )
+
     def _generate_recurring_now(self):
         created_ids = self.db.generate_due_recurring_transactions()
         self._refresh_recurring()
         self._refresh_transactions()
         self._refresh_accounts()
         self._refresh_budget()
+        archived_warning = self._archived_recurring_warning_text()
         if created_ids:
             plural = "s" if len(created_ids) > 1 else ""
-            messagebox.showinfo(APP_TITLE, f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural}.")
+            message = f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural}."
         else:
-            messagebox.showinfo(APP_TITLE, "Aucune echeance due pour le moment.")
+            message = "Aucune echeance due pour le moment."
+        if archived_warning:
+            messagebox.showwarning(APP_TITLE, message + archived_warning)
+        else:
+            messagebox.showinfo(APP_TITLE, message)
 
     def _auto_generate_recurring(self):
-        # Silencieux si rien n'est du (cas courant) : seule une generation
-        # reelle merite d'interrompre l'utilisateur a l'ouverture.
+        # Silencieux si rien n'est du ET qu'aucun modele n'est bloque par un
+        # archivage (cas courant) : seule une generation reelle ou une
+        # situation qui merite attention interrompt l'utilisateur a
+        # l'ouverture.
         created_ids = self.db.generate_due_recurring_transactions()
-        if not created_ids:
+        archived_warning = self._archived_recurring_warning_text()
+        if not created_ids and not archived_warning:
             return
         self._refresh_recurring()
         self._refresh_transactions()
         self._refresh_accounts()
         self._refresh_budget()
-        plural = "s" if len(created_ids) > 1 else ""
-        messagebox.showinfo(
-            APP_TITLE, f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural} automatiquement."
-        )
+        if created_ids:
+            plural = "s" if len(created_ids) > 1 else ""
+            message = f"{len(created_ids)} transaction{plural} recurrente{plural} generee{plural} automatiquement."
+        else:
+            message = "Aucune transaction recurrente generee."
+        if archived_warning:
+            messagebox.showwarning(APP_TITLE, message + archived_warning)
+        else:
+            messagebox.showinfo(APP_TITLE, message)
 
     # -- onglet Rapports -------------------------------------------------------
 
