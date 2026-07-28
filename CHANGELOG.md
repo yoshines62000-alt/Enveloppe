@@ -4,6 +4,16 @@ Historique des changements notables d'Enveloppe, par version. Format
 inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/) ;
 versionnage inspiré de [SemVer](https://semver.org/lang/fr/).
 
+## [1.0.16] - 2026-07-28
+
+### Corrigé
+- Import CSV : les comptes/catégories homonymes (même nom, casse près)
+  sont désormais détectés et signalés au lieu d'être fusionnés au hasard.
+- Restauration de sauvegarde réécrite en écriture atomique (plus de
+  fenêtre de corruption en cas de coupure pendant la restauration),
+  avec sauvegarde automatique du fichier actif avant restauration.
+- Édition d'une ligne de budget accessible au clavier (Entrée/F2).
+
 ## [1.0.15] - 2026-07-28
 
 Correctifs issus de la dernière passe de l'audit expert (backlog priorisé
