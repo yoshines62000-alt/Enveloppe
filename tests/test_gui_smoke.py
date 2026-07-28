@@ -271,6 +271,112 @@ class GuiSmokeTestCase(unittest.TestCase):
             self.app._restore_database()
         self.mock_warning.assert_called_once()
 
+    # -- audit : remplacement atomique + copie de securite automatique -------
+    # Jusqu'ici, la restauration ecrasait le fichier actif directement via
+    # shutil.copy2 (non atomique, contrairement a backup_to ci-dessus qui
+    # passe par l'API de sauvegarde sqlite3) : une interruption en plein
+    # milieu (coupure de courant, disque plein, cle USB retiree) aurait
+    # laisse le fichier de donnees actif dans un etat tronque/corrompu, sans
+    # aucun moyen de revenir en arriere.
+
+    def test_restore_automatically_backs_up_the_previous_active_data_before_replacing_it(self):
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+
+        from db import Database
+        backup_path = self.tmp / "sauvegarde.sqlite"
+        backup_db = Database(backup_path)
+        backup_db.add_account("Compte restaure", starting_balance=999.0)
+        backup_db.close()
+
+        active_path = Path(self.app.db.path)
+        files_before = set(active_path.parent.iterdir())
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
+             patch("tkinter.messagebox.askyesno", return_value=True):
+            self.app._restore_database()
+
+        new_files = set(active_path.parent.iterdir()) - files_before
+        safety_backups = [p for p in new_files if p.name.startswith("enveloppe-avant-restauration-")]
+        self.assertEqual(len(safety_backups), 1, f"copie de securite introuvable parmi {new_files}")
+
+        safety_db = Database(safety_backups[0])
+        try:
+            names = [a["name"] for a in safety_db.list_accounts()]
+            # Contenu ACTIF juste avant la restauration, pas le contenu
+            # restaure : la copie de securite doit permettre de revenir a
+            # l'etat d'AVANT ce clic, pas de dupliquer la sauvegarde choisie.
+            self.assertIn("Compte original", names)
+            self.assertNotIn("Compte restaure", names)
+        finally:
+            safety_db.close()
+
+    def test_restore_failure_during_the_atomic_replace_leaves_the_active_file_byte_for_byte_intact(self):
+        # Regression cle : l'ancien code (shutil.copy2 direct sur le fichier
+        # actif) aurait laisse ce fichier TRONQUE si l'ecriture etait
+        # interrompue en plein milieu. La nouvelle implementation copie vers
+        # un fichier temporaire puis bascule via os.replace() (atomique) - si
+        # CETTE derniere etape echoue, le fichier actif doit rester
+        # exactement dans son etat D'ORIGINE, octet pour octet.
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+
+        from db import Database
+        backup_path = self.tmp / "sauvegarde.sqlite"
+        backup_db = Database(backup_path)
+        backup_db.add_account("Compte restaure", starting_balance=999.0)
+        backup_db.close()
+
+        active_path = Path(self.app.db.path)
+        # Force le repliement du journal WAL dans le fichier principal AVANT
+        # de capturer les octets de reference : sans cela, la comparaison
+        # ci-dessous serait faussee par le checkpoint automatique que
+        # self.db.close() declenche pendant _restore_database elle-meme (le
+        # mode WAL differe l'ecriture des transactions validees dans le
+        # fichier principal), qui changerait legitimement ses octets sans
+        # aucun rapport avec l'echec simule de os.replace().
+        self.app.db.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        original_bytes = active_path.read_bytes()
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
+             patch("tkinter.messagebox.askyesno", return_value=True), \
+             patch("tkinter.messagebox.showerror") as mock_error, \
+             patch("os.replace", side_effect=OSError("disque plein simule")):
+            self.app._restore_database()
+
+        mock_error.assert_called_once()
+        self.assertEqual(active_path.read_bytes(), original_bytes, "fichier actif altere malgre l'echec atomique")
+        names = [a["name"] for a in self.app.db.list_accounts()]
+        self.assertIn("Compte original", names)
+        self.assertNotIn("Compte restaure", names)
+        # Le fichier temporaire ne doit jamais trainer derriere lui.
+        self.assertFalse(active_path.with_name(active_path.name + ".restauration-tmp").exists())
+
+    def test_restore_failure_before_closing_the_connection_never_leaks_or_replaces_it(self):
+        # Si l'echec survient AVANT la fermeture de la connexion active (ici
+        # : echec de la copie vers le fichier temporaire), self.db ne doit
+        # JAMAIS etre remplacee par une nouvelle connexion vers le meme
+        # fichier (la connexion d'origine, encore ouverte et valide, fuirait
+        # sinon silencieusement) - elle doit rester exactement le meme objet.
+        self.app.db.add_account("Compte original", starting_balance=100.0)
+        original_db_object = self.app.db
+
+        from db import Database
+        backup_path = self.tmp / "sauvegarde.sqlite"
+        backup_db = Database(backup_path)
+        backup_db.add_account("Compte restaure", starting_balance=999.0)
+        backup_db.close()
+
+        with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
+             patch("tkinter.messagebox.askyesno", return_value=True), \
+             patch("tkinter.messagebox.showerror") as mock_error, \
+             patch("shutil.copy2", side_effect=OSError("disque plein simule")):
+            self.app._restore_database()
+
+        mock_error.assert_called_once()
+        self.assertIs(self.app.db, original_db_object)
+        names = [a["name"] for a in self.app.db.list_accounts()]
+        self.assertIn("Compte original", names)
+        self.assertNotIn("Compte restaure", names)
+
     # -- item 6 : banniere de depassement ------------------------------------
 
     def test_overspent_banner_is_empty_when_nothing_is_overspent(self):
@@ -982,6 +1088,52 @@ class GuiSmokeTestCase(unittest.TestCase):
             self.assertTrue(dialog.winfo_exists(), "le dialogue doit rester ouvert apres une saisie invalide")
         finally:
             dialog.destroy()
+
+    # -- audit (constat moyen) : editer une ligne du Budget necessitait le --
+    # -- double-clic souris, sans aucune alternative clavier -----------------
+    #
+    # Trouve a l'audit : self.budget_tree n'etait bindee que sur <Double-1>,
+    # sans aucun moyen d'ouvrir le dialogue d'edition au clavier une fois la
+    # ligne selectionnee (fleches haut/bas). Entree et F2 sont desormais
+    # bindes sur le meme callback (_edit_budget_entry) - F2 est le raccourci
+    # standard "renommer/editer l'element selectionne" (Explorateur Windows,
+    # tableurs...), Entree le complete pour rester coherent avec le reste de
+    # l'application (audit D33, Entree valide deja partout ailleurs).
+
+    def test_return_key_opens_the_budget_entry_edit_dialog(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_id = self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(lambda: _press(self.app.budget_tree, "<Return>"))
+        try:
+            self.assertTrue(dialog.winfo_exists())
+        finally:
+            dialog.destroy()
+
+    def test_f2_key_opens_the_budget_entry_edit_dialog(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        cat_id = self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_set(str(cat_id))
+
+        dialog = self._new_dialog(lambda: _press(self.app.budget_tree, "<F2>"))
+        try:
+            self.assertTrue(dialog.winfo_exists())
+        finally:
+            dialog.destroy()
+
+    def test_return_key_on_budget_tree_without_selection_opens_no_dialog(self):
+        self.app.db.add_account("Compte", starting_balance=1000.0)
+        self.app.db.add_category("Epicerie")
+        self.app._refresh_budget()
+        self.app.budget_tree.selection_remove(*self.app.budget_tree.selection())
+
+        before = set(self.root.winfo_children())
+        _press(self.app.budget_tree, "<Return>")
+        after = set(self.root.winfo_children()) - before
+        self.assertEqual(len(after), 0, "aucune ligne selectionnee : pas de dialogue attendu")
 
     def test_edit_category_goal_dialog_accepts_french_decimal_comma_amounts(self):
         cat_id = self.app.db.add_category("Vacances")

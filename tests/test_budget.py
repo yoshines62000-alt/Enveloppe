@@ -396,6 +396,36 @@ class AnnualBudgetOverviewTestCase(unittest.TestCase):
         overview = bg.annual_budget_overview(self.db, 2026)
         self.assertEqual([r["category_id"] for r in overview["rows"]], [self.fun_id, self.groceries_id])
 
+    def test_overview_does_not_query_the_database_once_per_category_per_month(self):
+        # Regression trouvee a l'audit (perf) : annual_budget_overview
+        # appelait auparavant db.get_budget_entry categorie par categorie
+        # ET mois par mois (jusqu'a N x 12 requetes SQL separees pour une
+        # seule vue annuelle) au lieu d'une unique requete agregee (voir
+        # Database.budget_entries_for_year). Verifie ici directement le
+        # mecanisme du correctif en comptant les appels a conn.execute :
+        # avec 2 categories sur 12 mois, l'ancien code declenchait au moins
+        # 24 SELECT rien que pour les montants assignes ; le correctif ne
+        # doit executer qu'une poignee de requetes au total (une pour les
+        # categories, une pour tous les montants assignes de l'annee).
+        class _ExecuteCounter:
+            def __init__(self, real_conn):
+                self._real_conn = real_conn
+                self.execute_calls = 0
+
+            def execute(self, *args, **kwargs):
+                self.execute_calls += 1
+                return self._real_conn.execute(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real_conn, name)
+
+        self.db.set_budget_entry(self.groceries_id, "2026-01", 100.0)
+        self.db.set_budget_entry(self.fun_id, "2026-06", 50.0)
+        counter = _ExecuteCounter(self.db.conn)
+        self.db.conn = counter
+        bg.annual_budget_overview(self.db, 2026)
+        self.assertLess(counter.execute_calls, 24)
+
 
 if __name__ == "__main__":
     unittest.main()

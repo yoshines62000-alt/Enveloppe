@@ -198,9 +198,14 @@ def annual_budget_overview(db, year: int) -> dict:
     aucune assignation avant qu'ils n'arrivent. Une categorie jamais
     assignee de toute l'annee est omise."""
     months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
+    # Une seule requete agregee pour toute l'annee (bug trouve a l'audit,
+    # voir Database.budget_entries_for_year) au lieu d'un appel a
+    # get_budget_entry par categorie ET par mois (jusqu'a N x 12 requetes
+    # separees pour cette seule vue annuelle).
+    entries = db.budget_entries_for_year(year)
     rows = []
     for category in db.list_categories(include_archived=True):
-        amounts = {month: db.get_budget_entry(category["id"], month) for month in months}
+        amounts = {month: entries.get((category["id"], month), 0.0) for month in months}
         if not any(amounts.values()):
             continue
         rows.append({

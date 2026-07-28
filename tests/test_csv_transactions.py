@@ -354,6 +354,104 @@ class ImportTransactionsCsvTestCase(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertIsNone(self.db.list_transactions()[0]["category_id"])
 
+    # -- audit : deux comptes/categories homonymes ne fusionnent plus jamais
+    # silencieusement les transactions importees sur le mauvais enregistrement
+    # (ni contrainte UNIQUE en base, ni avertissement a la creation d'un
+    # compte/categorie de meme nom - voir _resolve_names_by_key) --
+
+    def test_two_accounts_with_the_same_name_are_never_silently_merged_at_import(self):
+        # Bug trouve a l'audit : rien n'empeche de creer deux comptes du meme
+        # nom a la casse pres (aucune contrainte UNIQUE, aucun avertissement
+        # a la creation, voir gui.py _add_account). L'ancienne resolution
+        # "dernier gagnant" de import_transactions_csv aurait alors impute AU
+        # HASARD (celui parcouru en dernier par list_accounts(), au gre du
+        # tri) toute ligne CSV visant ce nom, sans que rien ne le signale.
+        first_id = self.db.add_account("Livret Ados", starting_balance=0.0)
+        self.db.add_account("livret ados", starting_balance=0.0)  # doublon a la casse pres
+        path = self._write_csv([["", "2026-01-05", "Livret Ados", "", "", "", "-10.00", "Non"]])
+
+        result = import_transactions_csv(self.db, path)
+
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("ambigu", result["skipped"][0]["reason"])
+        self.assertIn("Livret Ados", result["ambiguous_accounts"])
+        self.assertEqual(self.db.list_transactions(), [])  # aucune transaction imputee au hasard
+        self.assertEqual(self.db.account_balance(first_id), 0.0)  # ni sur l'un, ni sur l'autre
+
+    def test_ambiguous_account_name_is_rejected_even_when_a_default_account_id_is_provided(self):
+        # Le repli sur default_account_id ne doit jouer que pour un compte
+        # VRAIMENT inconnu, jamais pour un nom ambigu - sinon meme risque
+        # silencieux, simplement redirige vers le compte par defaut plutot
+        # que vers l'un des deux homonymes.
+        default_id = self.db.add_account("Compte par defaut", starting_balance=0.0)
+        self.db.add_account("Livret Ados", starting_balance=0.0)
+        self.db.add_account("Livret ADOS", starting_balance=0.0)
+        path = self._write_csv([["", "2026-01-05", "Livret Ados", "", "", "", "-10.00", "Non"]])
+
+        result = import_transactions_csv(self.db, path, default_account_id=default_id)
+
+        self.assertEqual(result["imported"], 0)
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("ambigu", result["skipped"][0]["reason"])
+        self.assertEqual(self.db.account_balance(default_id), 0.0)
+
+    def test_two_categories_with_the_same_name_leave_the_transaction_uncategorized_instead_of_merging(self):
+        # Meme bug que pour les comptes, mais une categorie ambigue ne doit
+        # PAS faire rejeter la ligne (une categorie inconnue ne le fait deja
+        # pas non plus) : la transaction est importee non categorisee,
+        # exactement comme pour une categorie inconnue, plutot que de
+        # deviner laquelle des deux categories homonymes etait visee. Deux
+        # categories de meme nom dans deux groupes differents (ex : "Autres"
+        # dans "Maison" ET dans "Loisirs") sont un usage legitime, pas
+        # forcement une erreur de saisie - d'ou le choix de rester permissif
+        # en base plutot que d'imposer une contrainte UNIQUE.
+        self.db.add_category("Autres", group_name="Maison")
+        self.db.add_category("Autres", group_name="Loisirs")
+        path = self._write_csv([["", "2026-01-05", "Compte courant", "Autres", "", "", "-10.00", "Non"]])
+
+        result = import_transactions_csv(self.db, path)
+
+        self.assertEqual(result["imported"], 1)
+        self.assertIsNone(self.db.list_transactions()[0]["category_id"])
+        self.assertIn("Autres", result["ambiguous_categories"])
+
+    def test_ambiguous_name_lists_are_empty_when_no_duplicate_names_exist(self):
+        path = self._write_csv([["", "2026-01-05", "Compte courant", "Epicerie", "", "", "-10.00", "Non"]])
+        result = import_transactions_csv(self.db, path)
+        self.assertEqual(result["ambiguous_accounts"], [])
+        self.assertEqual(result["ambiguous_categories"], [])
+
+    def test_a_split_referencing_an_ambiguous_category_name_leaves_the_transaction_unsplit(self):
+        # Meme protection appliquee a la colonne "Repartition" (fractionnement
+        # reimporte, voir _parse_repartition_cell) : une categorie ambigue
+        # dans une part de fractionnement ne doit pas non plus etre resolue
+        # au hasard - la transaction reimportee reste alors non fractionnee,
+        # comme lorsqu'une categorie du fractionnement d'origine n'existe
+        # plus du tout dans la base cible.
+        household_id = self.db.add_category("Maison")
+        tx_id = self.db.add_transaction(self.account_id, "2026-01-05", -100.0)
+        self.db.set_transaction_splits(tx_id, [
+            {"category_id": self.category_id, "amount": -60.0},
+            {"category_id": household_id, "amount": -40.0},
+        ])
+        export_path = self.tmp / "export.csv"
+        export_transactions_csv(self.db.list_transactions(), export_path, db=self.db)
+
+        other_db = Database(self.tmp / "other.sqlite")
+        self.addCleanup(other_db.close)
+        other_db.add_account("Compte courant", starting_balance=0.0)
+        other_db.add_category("Epicerie")
+        other_db.add_category("epicerie")  # doublon a la casse pres -> ambigu
+        other_db.add_category("Maison")
+
+        result = import_transactions_csv(other_db, export_path)
+
+        self.assertEqual(result["imported"], 1)
+        imported_tx = other_db.list_transactions()[0]
+        self.assertEqual(imported_tx["split_count"], 0)
+        self.assertIn("Epicerie", result["ambiguous_categories"])
+
     def test_invalid_amount_is_skipped_and_reported_without_aborting_the_whole_import(self):
         path = self._write_csv([
             ["", "2026-01-05", "Compte courant", "", "", "", "pas-un-nombre", "Non"],

@@ -388,6 +388,19 @@ class Database:
         ).fetchone()
         return row["assigned"] if row else 0.0
 
+    def budget_entries_for_year(self, year: int) -> dict:
+        """Tous les montants assignes de l'annee `year`, en UNE SEULE
+        requete (bug trouve a l'audit, voir annual_budget_overview dans
+        budget.py) : cette derniere appelait auparavant get_budget_entry
+        une fois par categorie ET par mois (jusqu'a N x 12 allers-retours
+        base de donnees pour une vue annuelle), au lieu d'un unique SELECT
+        filtre sur l'annee. Cle du dict retourne : (category_id, month)."""
+        rows = self.conn.execute(
+            "SELECT category_id, month, assigned FROM budget_entries WHERE month LIKE ?",
+            (f"{year:04d}-%",),
+        ).fetchall()
+        return {(row["category_id"], row["month"]): row["assigned"] for row in rows}
+
     def sum_assigned_up_to(self, category_id: int, month: str) -> float:
         row = self.conn.execute(
             "SELECT COALESCE(SUM(assigned), 0) FROM budget_entries WHERE category_id = ? AND month <= ?",

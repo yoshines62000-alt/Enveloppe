@@ -647,9 +647,21 @@ class EnveloppeApp:
         self.budget_tree.tag_configure("archived", foreground="#888888")
         self.budget_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
         self.budget_tree.bind("<Double-1>", self._edit_budget_entry)
+        # Entree et F2 comme alternative clavier au double-clic (audit) :
+        # l'edition d'une ligne n'etait accessible qu'a la souris, sans
+        # aucun moyen d'y arriver au clavier une fois la ligne selectionnee
+        # (fleches haut/bas) - Entree/F2 est le raccourci standard pour
+        # "editer l'element selectionne" dans les interfaces a liste/tableau
+        # (Explorateur Windows, tableurs...).
+        self.budget_tree.bind("<Return>", self._edit_budget_entry)
+        self.budget_tree.bind("<F2>", self._edit_budget_entry)
 
         ttk.Label(
-            frame, text="Double-cliquez sur une ligne pour modifier le montant budgete de ce mois.",
+            frame,
+            text=(
+                "Double-cliquez sur une ligne (ou selectionnez-la puis appuyez sur "
+                "Entree/F2) pour modifier le montant budgete de ce mois."
+            ),
             foreground="#666",
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
@@ -1146,6 +1158,23 @@ class EnveloppeApp:
         self._refresh_accounts()
         self._refresh_budget()
         message = f"{result['imported']} transaction(s) importee(s)."
+        # Comptes/categories homonymes detectes (bug trouve a l'audit, voir
+        # csv_transactions._resolve_names_by_key) : affiche AVANT le detail
+        # ligne par ligne ci-dessous, c'est un avertissement global sur
+        # l'etat de la base (independant du fichier importe) plutot qu'un
+        # probleme propre a telle ou telle ligne.
+        if result.get("ambiguous_accounts") or result.get("ambiguous_categories"):
+            message += (
+                "\n\nATTENTION : plusieurs comptes et/ou categories portent le meme nom "
+                "(a la casse pres). Les lignes visant un compte ambigu ont ete ignorees, "
+                "et celles visant une categorie ambigue ont ete importees sans categorie, "
+                "pour ne pas risquer de les affecter au mauvais enregistrement. "
+                "Renommez-les pour lever l'ambiguite, puis reimportez si besoin :"
+            )
+            if result.get("ambiguous_accounts"):
+                message += f"\n  Comptes : {', '.join(result['ambiguous_accounts'])}"
+            if result.get("ambiguous_categories"):
+                message += f"\n  Categories : {', '.join(result['ambiguous_categories'])}"
         if result["duplicates"]:
             # Detail ligne par ligne (compte/date/montant/beneficiaire), pas
             # seulement un compteur (audit D17) : la cle de doublon ignore
@@ -1863,12 +1892,43 @@ class EnveloppeApp:
 
     def _restore_database(self):
         """Restaure une sauvegarde choisie par l'utilisateur par-dessus les
-        donnees actives (audit D47), sans quitter l'application : ferme la
-        connexion active, copie le fichier choisi par-dessus le fichier de
-        donnees, rouvre une connexion sur ce meme chemin, puis rafraichit
-        tous les onglets pour refleter les donnees restaurees."""
+        donnees actives (audit D47), sans quitter l'application : sauvegarde
+        d'abord le fichier actif (voir plus bas), copie le fichier choisi
+        vers un fichier temporaire puis le substitue de facon atomique au
+        fichier de donnees, rouvre une connexion sur ce meme chemin, puis
+        rafraichit tous les onglets pour refleter les donnees restaurees.
+
+        Deux garanties ajoutees a l'audit (bug trouve, asymetrique avec
+        backup_to ci-dessus qui, elle, passe deja par l'API de sauvegarde
+        atomique de sqlite3) :
+
+        1. Remplacement ATOMIQUE du fichier actif : copier directement
+           `shutil.copy2(backup_path, active_path)` (l'ancien comportement)
+           ecrit par-dessus le fichier actif OCTET PAR OCTET - une coupure
+           en plein milieu (coupure de courant, disque plein, cle USB
+           retiree) laisse alors le fichier de donnees actif dans un etat
+           TRONQUE, ni l'ancien contenu ni le nouveau, corrompu. La copie se
+           fait donc desormais vers un fichier temporaire (voir tmp_path,
+           plus bas) sur le MEME dossier/volume que la destination finale,
+           puis `os.replace()` bascule les deux d'un seul coup :
+           `os.replace` est garanti atomique par le systeme de fichiers
+           (rename POSIX / MoveFileEx Windows) - a n'importe quel instant,
+           `active_path` designe soit l'ANCIEN contenu intact, soit le
+           NOUVEAU contenu intact, jamais un etat intermediaire.
+        2. Sauvegarde automatique de l'ancien fichier actif AVANT toute
+           modification (voir pre_restore_backup_path, via backup_to comme
+           _backup_database) : meme une restauration qui se termine sans
+           erreur technique peut s'averer etre une mauvaise idee apres coup
+           (mauvais fichier choisi par erreur parmi plusieurs sauvegardes
+           similaires, sauvegarde bien plus ancienne que prevu...) - sans ce
+           filet, les donnees remplacees etaient jusqu'ici perdues
+           definitivement des la confirmation, sans aucun moyen de revenir
+           en arriere autrement qu'en ayant, par chance, une sauvegarde
+           MANUELLE distincte et a jour sous la main."""
+        import os
         import shutil
         import sqlite3
+        from datetime import datetime as _datetime
         from tkinter import filedialog
 
         path = filedialog.askopenfilename(
@@ -1916,17 +1976,68 @@ class EnveloppeApp:
             "donnees actuelles (comptes, categories, budgets, transactions) par "
             "le contenu de ce fichier.\n\n"
             f"Fichier choisi :\n{backup_path}\n\n"
-            "Cette action est irreversible (sauvegardez vos donnees actuelles au "
-            "prealable si besoin). Continuer ?",
+            "Une copie de securite des donnees actuelles sera d'abord enregistree "
+            "automatiquement a cote du fichier de donnees, pour permettre de "
+            "revenir en arriere si necessaire. Continuer ?",
         ):
             return
 
+        # Copie temporaire sur le MEME dossier (donc le meme volume) que
+        # active_path : condition necessaire pour qu'os.replace() ci-dessous
+        # reste atomique - un rename entre deux volumes differents degenere
+        # silencieusement en copie+suppression non atomique sur certains
+        # systemes. Suffixe distinctif pour ne jamais entrer en collision
+        # avec un fichier legitime de l'utilisateur.
+        tmp_path = active_path.with_name(active_path.name + ".restauration-tmp")
+        pre_restore_backup_path = active_path.with_name(
+            f"enveloppe-avant-restauration-{_datetime.now().strftime('%Y-%m-%d_%H%M%S')}.sqlite"
+        )
+        db_closed = False
         try:
+            # 1. Sauvegarde automatique de l'etat actuel AVANT toute
+            # modification (voir docstring) - self.db est encore ouverte ici,
+            # meme API atomique que le bouton "Sauvegarder les donnees..."
+            # (backup_to, plus haut dans ce fichier).
+            self.db.backup_to(pre_restore_backup_path)
+            # 2. Copie du fichier choisi vers un temporaire : self.db reste
+            # ouverte tant que cette etape n'est pas terminee, donc une
+            # interruption ici (disque plein en plein milieu de la copie...)
+            # laisse l'application parfaitement fonctionnelle sur les
+            # donnees d'origine, inchangees.
+            shutil.copy2(backup_path, tmp_path)
+            # 3. Ferme la connexion active seulement maintenant (juste avant
+            # de remplacer le fichier qu'elle a ouvert) : sur Windows, un
+            # fichier avec un descripteur encore ouvert ne peut pas etre
+            # remplace par os.replace().
             self.db.close()
-            shutil.copy2(backup_path, active_path)
-        except (OSError, sqlite3.Error) as exc:
+            db_closed = True
+            # 4. Substitution atomique (voir docstring) : jamais d'etat
+            # tronque/intermediaire visible, meme en cas de coupure pile a
+            # cet instant.
+            os.replace(tmp_path, active_path)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            # ValueError en plus d'OSError/sqlite3.Error : backup_to() (etape
+            # 1) leve un ValueError si sa destination s'averait etre le
+            # fichier actif lui-meme - ne devrait jamais arriver ici (nom
+            # genere distinct), mais reste gere par symetrie avec
+            # _backup_database ci-dessus plutot que de laisser remonter une
+            # exception non geree dans ce cas limite.
             messagebox.showerror(APP_TITLE, f"Impossible de restaurer la sauvegarde : {exc}")
-            self.db = Database(active_path)  # ne jamais laisser l'application sans connexion valide
+            try:
+                tmp_path.unlink(missing_ok=True)  # nettoyage best-effort du temporaire, jamais bloquant
+            except OSError:
+                pass
+            if db_closed:
+                # self.db n'a ete ferme QUE si l'echec survient a l'etape 4
+                # (os.replace) - dans ce cas precis, active_path contient
+                # toujours les donnees d'ORIGINE intactes (l'echec de
+                # l'etape 4 empeche justement le remplacement), donc rouvrir
+                # dessus reste correct. Si l'echec survient plus tot (etape 1
+                # ou 2), self.db est encore ouverte et parfaitement valide :
+                # la reouvrir ici la remplacerait par une SECONDE connexion
+                # vers le meme fichier sans jamais fermer la premiere (fuite
+                # de connexion) - ne jamais le faire dans ce cas.
+                self.db = Database(active_path)  # ne jamais laisser l'application sans connexion valide
             return
         self.db = Database(active_path)
 

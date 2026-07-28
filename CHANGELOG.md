@@ -4,10 +4,10 @@ Historique des changements notables d'Enveloppe, par version. Format
 inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/) ;
 versionnage inspiré de [SemVer](https://semver.org/lang/fr/).
 
-## [Non publié]
+## [1.0.15] - 2026-07-28
 
 Correctifs issus de la dernière passe de l'audit expert (backlog priorisé
-qualité/effort), en attente de publication :
+qualité/effort) :
 
 ### Ajouté
 - Ligne de total agrégé (solde actuel + solde pointé, comptes archivés

@@ -112,6 +112,30 @@ class DatabaseTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.set_budget_entry(category_id, "2026-1", 100.0)
 
+    def test_budget_entries_for_year_returns_only_that_years_entries(self):
+        # Regression audit (perf) : annual_budget_overview appelait
+        # auparavant get_budget_entry categorie par categorie ET mois par
+        # mois (jusqu'a N x 12 requetes) au lieu d'une seule requete
+        # agregee - voir budget.annual_budget_overview.
+        category_id = self.db.add_category("Epicerie")
+        other_id = self.db.add_category("Loisirs")
+        self.db.set_budget_entry(category_id, "2026-01", 100.0)
+        self.db.set_budget_entry(category_id, "2026-06", 150.0)
+        self.db.set_budget_entry(other_id, "2026-03", 42.0)
+        self.db.set_budget_entry(category_id, "2025-12", 999.0)  # annee differente, doit etre exclu
+        entries = self.db.budget_entries_for_year(2026)
+        self.assertEqual(
+            entries,
+            {
+                (category_id, "2026-01"): 100.0,
+                (category_id, "2026-06"): 150.0,
+                (other_id, "2026-03"): 42.0,
+            },
+        )
+
+    def test_budget_entries_for_year_is_empty_when_no_entries_exist(self):
+        self.assertEqual(self.db.budget_entries_for_year(2026), {})
+
     def test_add_transaction_rejects_malformed_date(self):
         account_id = self.db.add_account("A")
         with self.assertRaises(ValueError):

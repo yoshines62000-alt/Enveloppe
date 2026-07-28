@@ -140,6 +140,57 @@ def _duplicate_key(account_id: int, date: str, amount: float, payee: str) -> tup
     return (account_id, date, round(amount, 2), payee.strip().lower())
 
 
+def _resolve_names_by_key(records) -> tuple:
+    """`records` : lignes de Database.list_accounts()/list_categories()
+    (colonnes "id" et "name"). Construit la table de resolution nom -> id
+    utilisee par import_transactions_csv pour retrouver le compte/la
+    categorie designe par une ligne CSV, MAIS exclut volontairement de
+    cette table tout nom porte par plusieurs comptes/categories a la fois
+    (a la casse pres) - bug trouve a l'audit : rien n'empeche aujourd'hui de
+    creer deux comptes (ou deux categories) du meme nom, ni la base
+    (aucune contrainte UNIQUE sur ces colonnes) ni la GUI (_add_account/
+    _add_category, gui.py) ; sans cette exclusion, la resolution nom -> id
+    "dernier gagnant" de import_transactions_csv fusionnait alors
+    silencieusement les transactions importees sur UN SEUL des deux
+    enregistrements homonymes (celui parcouru en dernier par
+    list_accounts()/list_categories()), au hasard du tri, sans aucun
+    avertissement.
+
+    Une contrainte UNIQUE COLLATE NOCASE en base aurait ferme le probleme a
+    la racine, mais casserait l'ouverture de toute base existante ayant
+    deja des doublons (aucune migration ne peut choisir a la place de
+    l'utilisateur lequel de deux comptes homonymes renommer ou fusionner) -
+    et un nom de categorie duplique dans deux groupes differents (ex :
+    categorie "Autres" a la fois dans le groupe "Maison" et dans le groupe
+    "Loisirs") est un usage legitime, pas une erreur de saisie. La
+    resolution par nom reste donc permissive en base/GUI, mais l'import CSV
+    (qui, lui, ne peut choisir arbitrairement entre deux enregistrements
+    homonymes sans risquer de se tromper) refuse desormais de deviner :
+    voir ambiguous_keys (utilise par import_transactions_csv pour rejeter
+    individuellement chaque ligne concernee, compte, ou laisser la
+    categorie non resolue) et ambiguous_display_names (le nom exact, tel
+    que saisi, de chaque doublon detecte - reporte une seule fois dans le
+    resultat de import_transactions_csv pour signalement clair a
+    l'utilisateur).
+
+    Renvoie (mapping, ambiguous_keys, ambiguous_display_names)."""
+    from collections import Counter
+
+    counts: Counter = Counter()
+    display_name = {}
+    id_by_key = {}
+    for record in records:
+        key = record["name"].strip().lower()
+        counts[key] += 1
+        display_name.setdefault(key, record["name"].strip())
+        id_by_key[key] = record["id"]
+
+    mapping = {key: id_by_key[key] for key, n in counts.items() if n == 1}
+    ambiguous_keys = {key for key, n in counts.items() if n > 1}
+    ambiguous_display_names = sorted((display_name[key] for key in ambiguous_keys), key=str.lower)
+    return mapping, ambiguous_keys, ambiguous_display_names
+
+
 # Encodages tentes dans l'ordre a la lecture d'un CSV importe. utf-8-sig en
 # premier : c'est le format ecrit par export_transactions_csv lui-meme (avec
 # ou sans BOM, le "-sig" gere les deux), donc le cas le plus frequent reste
@@ -279,7 +330,19 @@ def import_transactions_csv(
     deja presente est ignoree plutot qu'importee - sans cela, reimporter par
     erreur deux fois le meme fichier (ou un export qui chevauche un import
     precedent) doublerait silencieusement chaque transaction concernee,
-    faussant d'autant les soldes de comptes et le reste a assigner."""
+    faussant d'autant les soldes de comptes et le reste a assigner.
+
+    Si deux comptes (ou deux categories) portent le meme nom a la casse
+    pres, aucune ligne CSV ne peut plus se resoudre au hasard sur l'un des
+    deux (bug trouve a l'audit, voir _resolve_names_by_key) : une ligne
+    visant un compte ambigu est desormais rejetee individuellement (comme
+    un compte inconnu, voir "skipped"), et une ligne visant une categorie
+    ambigue laisse la transaction non categorisee (comme une categorie
+    inconnue) plutot que de deviner. Le nom exact de chaque doublon detecte
+    est renvoye une seule fois via "ambiguous_accounts"/"ambiguous_categories"
+    (voir plus bas) pour signalement clair a l'utilisateur, qui reste seul
+    a pouvoir choisir comment renommer/fusionner les enregistrements
+    concernes."""
     input_path = Path(input_path)
     text = _read_csv_text(input_path)
     delimiter = _detect_csv_delimiter(text[:4096])
@@ -290,8 +353,12 @@ def import_transactions_csv(
         )
     rows = list(reader)
 
-    accounts_by_name = {a["name"].strip().lower(): a["id"] for a in db.list_accounts(include_archived=True)}
-    categories_by_name = {c["name"].strip().lower(): c["id"] for c in db.list_categories(include_archived=True)}
+    accounts_by_name, ambiguous_account_keys, ambiguous_account_names = _resolve_names_by_key(
+        db.list_accounts(include_archived=True)
+    )
+    categories_by_name, ambiguous_category_keys, ambiguous_category_names = _resolve_names_by_key(
+        db.list_categories(include_archived=True)
+    )
     existing_keys = set()
     if skip_duplicates:
         existing_keys = {
@@ -310,13 +377,32 @@ def import_transactions_csv(
 
     for line_number, row in enumerate(rows, start=2):  # ligne 1 = entete
         account_name = (row.get("Compte") or "").strip().lower()
+        if account_name in ambiguous_account_keys:
+            # Deux comptes (ou plus) portent ce nom a la casse pres : voir
+            # _resolve_names_by_key - impossible de deviner lequel des deux
+            # cette ligne visait, la ligne est donc rejetee individuellement
+            # plutot que de fusionner ses transactions au hasard sur l'un
+            # des deux (bug trouve a l'audit). Le detail des noms en
+            # doublon est aussi renvoye une seule fois via
+            # "ambiguous_accounts" (voir plus bas).
+            skipped.append({
+                "line": line_number,
+                "reason": f"compte ambigu : plusieurs comptes portent le nom '{row.get('Compte', '')}' "
+                          "(renommez-les pour lever l'ambiguite avant de reimporter)",
+            })
+            continue
         account_id = accounts_by_name.get(account_name, default_account_id)
         if account_id is None:
             skipped.append({"line": line_number, "reason": f"compte inconnu : '{row.get('Compte', '')}'"})
             continue
 
         category_name = (row.get("Categorie") or "").strip().lower()
-        category_id = categories_by_name.get(category_name)
+        # Meme motif que pour le compte ci-dessus, mais sans rejeter la
+        # ligne : une categorie ambigue est traitee comme une categorie
+        # inconnue (transaction laissee non categorisee) plutot que de
+        # deviner - une transaction sans categorie est deja un cas normal,
+        # gere silencieusement partout ailleurs dans cette fonction.
+        category_id = None if category_name in ambiguous_category_keys else categories_by_name.get(category_name)
 
         try:
             amount = float((row.get("Montant") or "").replace(",", "."))
@@ -428,4 +514,12 @@ def import_transactions_csv(
 
     db.conn.commit()  # valide le dernier lot (incomplet) d'insertions + la reliaison des virements
 
-    return {"imported": imported, "skipped": skipped, "duplicates": duplicates}
+    return {
+        "imported": imported, "skipped": skipped, "duplicates": duplicates,
+        # Noms de comptes/categories ambigus detectes AVANT meme de lire le
+        # fichier CSV (voir _resolve_names_by_key) - independant du contenu
+        # du fichier importe, donc reporte une seule fois ici plutot que
+        # ligne par ligne comme "skipped"/"duplicates" (gui.py les affiche
+        # dans le meme message recapitulatif de fin d'import).
+        "ambiguous_accounts": ambiguous_account_names, "ambiguous_categories": ambiguous_category_names,
+    }

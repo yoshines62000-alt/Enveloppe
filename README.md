@@ -225,3 +225,31 @@ petit café est toujours très apprécié. 🙌
 [![Offrez-moi un café sur Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/yoshines62000)
 
 </div>
+
+## Limites connues
+
+Par honnêteté envers les utilisateurs, plutôt que de laisser ces limites se
+découvrir à l'usage :
+
+- **Devise unique (EUR)** : le formatage des montants est codé en euros
+  (`budget.format_amount`) et aucune table de la base ne stocke de devise
+  par compte. Enveloppe ne convient donc pas tel quel à un budget dans une
+  autre devise ou multi-devises.
+- **Import CSV limité au format d'export d'Enveloppe** : l'import (onglet
+  Transactions) attend au minimum les en-têtes `Date` et `Montant` du
+  format produit par l'export d'Enveloppe lui-même, sans correspondance de
+  colonnes ni détection automatique de format. Un relevé bancaire brut
+  téléchargé depuis votre banque doit d'abord être reformaté (à la main ou
+  via un script externe) avant d'être importable.
+- **Une seule instance à la fois sur un même fichier de données** : aucun
+  verrou applicatif n'empêche d'ouvrir deux instances d'Enveloppe
+  simultanément sur le même fichier `enveloppe.sqlite` ; SQLite peut alors
+  renvoyer une erreur « database is locked » ou, dans le pire cas,
+  entrelacer des écritures de façon inattendue. N'ouvrez qu'une seule
+  instance à la fois sur un même fichier de données.
+- **Accessibilité (lecteur d'écran)** : l'interface est construite avec
+  Tkinter/ttk, dont le support des technologies d'assistance (Narrator,
+  NVDA, JAWS) est historiquement faible sur toutes les plateformes et tous
+  les thèmes, indépendamment de tout choix propre à Enveloppe - même limite
+  que documentée dans les autres outils de la suite basés sur la même
+  technologie.
