@@ -376,6 +376,28 @@ def import_transactions_csv(
     imported_by_csv_id = {}
 
     for line_number, row in enumerate(rows, start=2):  # ligne 1 = entete
+        extra_fields = row.get(None)
+        if extra_fields:
+            # csv.DictReader place ici les valeurs en trop par rapport a
+            # l'entete. Cause la plus frequente : le delimiteur de colonnes
+            # detecte est identique au separateur decimal d'une cellule non
+            # protegee par des guillemets (ex : delimiteur virgule + montant
+            # "-750,00" non quote) - sans ce garde-fou, Montant (et toutes les
+            # colonnes suivantes, decalees) seraient tronques/melanges
+            # SILENCIEUSEMENT, sans aucune ligne signalee en erreur (bug
+            # trouve a l'audit du 2026-07-28, reproduit par execution reelle :
+            # "-750,00" importe comme -750.0, perte silencieuse des centimes).
+            skipped.append({
+                "line": line_number,
+                "reason": (
+                    f"ligne malformee : {len(extra_fields)} colonne(s) en trop par rapport a "
+                    f"l'entete (delimiteur '{delimiter}' probablement en collision avec un "
+                    "separateur decimal non protege par des guillemets dans une cellule - "
+                    "reexportez en entourant de guillemets les cellules contenant ce caractere, "
+                    "ou changez le separateur decimal du fichier source)"
+                ),
+            })
+            continue
         account_name = (row.get("Compte") or "").strip().lower()
         if account_name in ambiguous_account_keys:
             # Deux comptes (ou plus) portent ce nom a la casse pres : voir

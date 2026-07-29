@@ -818,6 +818,30 @@ class FrenchBankCsvImportTestCase(unittest.TestCase):
         self.assertEqual(result["imported"], 1)
         self.assertEqual(other_db.list_transactions()[0]["amount"], -9.99)
 
+    def test_comma_delimiter_colliding_with_comma_decimal_amounts_is_rejected_not_silently_truncated(self):
+        # Trouve a l'audit du 2026-07-28 (reproduit par execution reelle) :
+        # quand le delimiteur detecte est la virgule ET que les montants sont
+        # ecrits avec une virgule decimale non protegee par des guillemets
+        # (convention francaise), csv.DictReader coupe la cellule "Montant"
+        # a la virgule decimale et decale toutes les colonnes suivantes -
+        # "-750,00" devenait -750.0 (perte silencieuse des centimes) sans
+        # qu'aucune ligne ne soit signalee en erreur. Desormais ces lignes
+        # doivent etre rejetees explicitement (colonnes en surnombre), pas
+        # importees avec un montant tronque.
+        content = (
+            "ID,Date,Compte,Categorie,Beneficiaire,Memo,Montant,Pointee\n"
+            ",2026-01-05,Compte courant,Alimentation,Boulangerie,,-750,00,Non\n"
+            ",2026-01-06,Compte courant,Alimentation,Salaire,,2450,75,Oui\n"
+        )
+        path = self._write_raw_csv(content, "utf-8-sig")
+        result = import_transactions_csv(self.db, path)
+
+        self.assertEqual(result["imported"], 0, "aucune de ces lignes malformees ne doit etre importee")
+        self.assertEqual(self.db.list_transactions(), [])
+        self.assertEqual(len(result["skipped"]), 2)
+        for entry in result["skipped"]:
+            self.assertIn("colonne(s) en trop", entry["reason"])
+
 
 class DatabaseWalModeTestCase(unittest.TestCase):
     def test_database_enables_wal_journal_mode(self):
