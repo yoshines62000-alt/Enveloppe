@@ -35,6 +35,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version='version_info.txt',
     icon=['icon.ico'],
     # Manifeste DPI-aware (audit D30) : voir Enveloppe.manifest pour le
     # detail et la justification complete. Sans lui, l'executable empaquete
