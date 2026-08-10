@@ -4,6 +4,16 @@ Historique des changements notables d'Enveloppe, par version. Format
 inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/) ;
 versionnage inspiré de [SemVer](https://semver.org/lang/fr/).
 
+## [1.1.0] - 2026-08-10
+
+### Ajouté
+- Graphiques dans l'onglet Rapports : histogramme des dépenses par
+  catégorie et par mois (dessiné sur Canvas, sans dépendance), en plus du
+  tableau existant.
+- Identité visuelle Open Projects Lab et mode sombre commutable (bascule
+  dans le bandeau, préférence mémorisée), communs aux applications OPL.
+- Bouton « Contact » intégré (retour bug/idée, conservé localement).
+
 ## [1.0.16] - 2026-07-28
 
 ### Corrigé
