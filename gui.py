@@ -17,6 +17,8 @@ from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
 from typing import Optional
 
 import budget as bg
+import opl_theme
+import opl_contact
 import update_checker
 from csv_transactions import CsvImportError, export_transactions_csv, import_transactions_csv
 from db import Database
@@ -120,6 +122,8 @@ class EnveloppeApp:
                 self.root.iconbitmap(str(icon_path))
             except Exception:
                 pass
+
+        opl_theme.entete(self.root, "Enveloppe", "Budget par enveloppes", on_contact=lambda: opl_contact.ouvrir(self.root, app="Enveloppe", version=APP_VERSION)).pack(fill="x", side="top")
 
         bottom_bar = ttk.Frame(self.root)
         bottom_bar.pack(fill=X, side="bottom")
@@ -2064,6 +2068,7 @@ class EnveloppeApp:
 
 def main():
     root = Tk()
+    opl_theme.apply(root, "Enveloppe")
     EnveloppeApp(root)
     root.mainloop()
 
