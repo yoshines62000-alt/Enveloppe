@@ -13,7 +13,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
+from tkinter import BOTH, Canvas, END, LEFT, RIGHT, X, Y, StringVar, Tk, ttk, messagebox
 from typing import Optional
 
 import budget as bg
@@ -127,11 +127,11 @@ class EnveloppeApp:
 
         bottom_bar = ttk.Frame(self.root)
         bottom_bar.pack(fill=X, side="bottom")
-        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side=LEFT, padx=(8, 0), pady=4)
+        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground=opl_theme.couleur("texte_doux")).pack(side=LEFT, padx=(8, 0), pady=4)
         self.update_status_var = StringVar(value="")
-        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
+        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground=opl_theme.couleur("texte_doux"))
         self.update_status_label.pack(side=LEFT, padx=(6, 0), pady=4)
-        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
+        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground=opl_theme.couleur("lien"), cursor="hand2")
         donate_label.pack(side=RIGHT, padx=8, pady=4)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
@@ -149,7 +149,7 @@ class EnveloppeApp:
         self.overspent_summary_var = StringVar(value="")
         overspent_label = ttk.Label(
             self.root, textvariable=self.overspent_summary_var,
-            foreground="#B00020", font=("Segoe UI", 10, "bold"),
+            foreground=opl_theme.couleur("danger"), font=("Segoe UI", 10, "bold"),
         )
         overspent_label.pack(fill=X, padx=10, pady=(6, 0))
 
@@ -214,11 +214,11 @@ class EnveloppeApp:
             return
         if status == "update_available":
             self.update_status_var.set(f"Mise a jour disponible : {tag} - Telecharger")
-            self.update_status_label.configure(foreground="#0645AD", cursor="hand2")
+            self.update_status_label.configure(foreground=opl_theme.couleur("lien"), cursor="hand2")
             self.update_status_label.bind("<Button-1>", lambda event: webbrowser.open(RELEASES_URL))
         elif status == "up_to_date":
             self.update_status_var.set("A jour")
-            self.update_status_label.configure(foreground="#1B7A1B", cursor="")
+            self.update_status_label.configure(foreground=opl_theme.couleur("succes"), cursor="")
         # "check_failed" (hors ligne, GitHub inaccessible...) : on ne
         # revendique rien plutot que d'afficher a tort "a jour".
 
@@ -413,7 +413,7 @@ class EnveloppeApp:
         # rien n'existait cote Comptes - un compte a decouvert (au moins
         # aussi grave qu'une enveloppe en depassement) s'affichait dans le
         # meme style neutre qu'un solde positif, sans signal visuel.
-        self.accounts_tree.tag_configure("negative", foreground="#B00020")
+        self.accounts_tree.tag_configure("negative", foreground=opl_theme.couleur("danger"))
         self.accounts_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
 
         # Ligne de total agrege (audit D5) : jusqu'ici, aucun total n'etait
@@ -527,7 +527,7 @@ class EnveloppeApp:
         actions.pack(fill=X, padx=10, pady=(0, 10))
         ttk.Button(actions, text="Archiver / desarchiver", command=self._toggle_category_archived).pack(side=LEFT)
         ttk.Label(
-            actions, text="Double-cliquez sur une ligne pour modifier son objectif d'epargne.", foreground="#666",
+            actions, text="Double-cliquez sur une ligne pour modifier son objectif d'epargne.", foreground=opl_theme.couleur("texte_doux"),
         ).pack(side=LEFT, padx=10)
 
     def _add_category(self):
@@ -647,8 +647,8 @@ class EnveloppeApp:
         ]:
             self.budget_tree.heading(col, text=label)
             self.budget_tree.column(col, width=width, anchor="w", stretch=True)
-        self.budget_tree.tag_configure("overspent", foreground="#B00020")
-        self.budget_tree.tag_configure("archived", foreground="#888888")
+        self.budget_tree.tag_configure("overspent", foreground=opl_theme.couleur("danger"))
+        self.budget_tree.tag_configure("archived", foreground=opl_theme.couleur("texte_doux"))
         self.budget_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
         self.budget_tree.bind("<Double-1>", self._edit_budget_entry)
         # Entree et F2 comme alternative clavier au double-clic (audit) :
@@ -666,7 +666,7 @@ class EnveloppeApp:
                 "Double-cliquez sur une ligne (ou selectionnez-la puis appuyez sur "
                 "Entree/F2) pour modifier le montant budgete de ce mois."
             ),
-            foreground="#666",
+            foreground=opl_theme.couleur("texte_doux"),
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
     def _change_month(self, delta: int):
@@ -813,7 +813,7 @@ class EnveloppeApp:
         ttk.Label(
             dialog,
             text="Deplacer plus que le disponible est permis : le 'Budgete' de la source devient negatif, a combler plus tard.",
-            foreground="#666", wraplength=320,
+            foreground=opl_theme.couleur("texte_doux"), wraplength=320,
         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
 
         def on_save():
@@ -931,9 +931,9 @@ class EnveloppeApp:
         # d'action gardent leur libelle complet, y compris a root.minsize().
         hint_row = ttk.Frame(frame)
         hint_row.pack(fill=X, padx=10)
-        ttk.Label(hint_row, text="Double-cliquez sur une ligne pour la modifier.", foreground="#666").pack(side=LEFT)
+        ttk.Label(hint_row, text="Double-cliquez sur une ligne pour la modifier.", foreground=opl_theme.couleur("texte_doux")).pack(side=LEFT)
         self.import_status_var = StringVar(value="")
-        ttk.Label(hint_row, textvariable=self.import_status_var, foreground="#666").pack(side=LEFT, padx=(10, 0))
+        ttk.Label(hint_row, textvariable=self.import_status_var, foreground=opl_theme.couleur("texte_doux")).pack(side=LEFT, padx=(10, 0))
 
         actions = ttk.Frame(frame)
         actions.pack(fill=X, padx=10, pady=(4, 10))
@@ -1498,7 +1498,7 @@ class EnveloppeApp:
             # silencieusement le fractionnement existant (bug d'audit).
             ttk.Label(
                 dialog, text=f"Fractionnee sur {len(existing_splits)} categories - "
-                "utilisez 'Fractionner...' pour la modifier", foreground="#666", wraplength=220,
+                "utilisez 'Fractionner...' pour la modifier", foreground=opl_theme.couleur("texte_doux"), wraplength=220,
             ).grid(row=1, column=1, sticky="w", padx=10)
         else:
             category_combo = ttk.Combobox(dialog, textvariable=category_var, values=category_labels, width=25, state="readonly")
@@ -1604,7 +1604,7 @@ class EnveloppeApp:
         ttk.Label(
             actions,
             text="Les echeances dues sont generees automatiquement a l'ouverture. Aucune suppression de compte/categorie n'est jamais automatique.",
-            foreground="#666",
+            foreground=opl_theme.couleur("texte_doux"),
         ).pack(side=LEFT)
         ttk.Button(actions, text="Generer maintenant", command=self._generate_recurring_now).pack(side=RIGHT)
         ttk.Button(actions, text="Supprimer le modele", command=self._delete_recurring).pack(side=RIGHT, padx=(0, 5))
@@ -1737,13 +1737,27 @@ class EnveloppeApp:
         self.reports_period_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_reports())
         ttk.Button(top, text="Actualiser", command=self._refresh_reports).pack(side=LEFT, padx=10)
 
-        self.reports_tree = ttk.Treeview(frame, show="headings", height=18)
+        self.reports_tree = ttk.Treeview(frame, show="headings", height=10)
         self.reports_tree.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+
+        # Graphiques dessines a la main sur un tk.Canvas (aucune dependance
+        # externe type matplotlib) a partir des memes donnees que le tableau
+        # ci-dessus : histogramme horizontal des depenses par categorie +
+        # depense totale mois par mois sur la periode choisie. Les couleurs
+        # sont lues via opl_theme.couleur() au MOMENT du dessin (le mode
+        # clair/sombre est deja resolu a ce stade) - voir _draw_reports_charts.
+        self.reports_canvas = Canvas(frame, height=300, highlightthickness=0)
+        self.reports_canvas.pack(fill=BOTH, expand=True, padx=10, pady=(0, 5))
+        # Dernier rapport calcule, memorise pour pouvoir redessiner a
+        # l'identique quand le Canvas est redimensionne (sans relancer la
+        # requete metier). Rempli par _refresh_reports.
+        self._reports_last = None
+        self.reports_canvas.bind("<Configure>", lambda e: self._draw_reports_charts())
 
         ttk.Label(
             frame,
             text="Depenses reelles par categorie et par mois (les remboursements et revenus ne sont pas comptes).",
-            foreground="#666",
+            foreground=opl_theme.couleur("texte_doux"),
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
     def _reports_num_months(self) -> int:
@@ -1768,6 +1782,146 @@ class EnveloppeApp:
             values = (row["name"],) + tuple(bg.format_amount(row["amounts"][m]) for m in months) + (bg.format_amount(row["total"]),)
             self.reports_tree.insert("", END, values=values)
 
+        # Memorise ces donnees et (re)dessine les graphiques sur le Canvas.
+        self._reports_last = report
+        self._draw_reports_charts()
+
+    def _draw_reports_charts(self):
+        """Dessine deux graphiques a partir des memes donnees que le tableau
+        Rapports (self._reports_last, produit par bg.spending_report - aucune
+        logique metier recalculee ici) :
+
+        1. un histogramme HORIZONTAL des depenses par categorie (barres
+           proportionnelles au total, libelle + montant) ;
+        2. un histogramme VERTICAL de la depense totale mois par mois sur la
+           periode choisie (3/6/12 derniers mois).
+
+        Appele a chaque rafraichissement ET a chaque <Configure> du Canvas
+        (changement de periode ou redimensionnement de la fenetre). Toutes
+        les couleurs sont lues via opl_theme.couleur() ICI, au moment du
+        dessin : le mode clair/sombre est deja resolu, le rendu reste donc
+        lisible dans les deux themes."""
+        canvas = getattr(self, "reports_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+
+        couleur = opl_theme.couleur
+        c_texte = couleur("texte")
+        c_doux = couleur("texte_doux")
+        c_bordure = couleur("bordure")
+        accents = (couleur("cyan"), couleur("emeraude"), couleur("vert_lab"))
+        # bg du Canvas relu a chaque dessin pour suivre le theme actif.
+        canvas.configure(bg=couleur("surface"))
+
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        # Avant le premier affichage reel, winfo_* renvoie 1 : rien a dessiner
+        # encore, le prochain <Configure> relancera le dessin.
+        if width <= 1 or height <= 1:
+            return
+
+        report = self._reports_last or {"months": [], "rows": []}
+        rows = report.get("rows", [])
+        months = report.get("months", [])
+
+        if not rows:
+            canvas.create_text(
+                width // 2, height // 2, text="Aucune depense sur la periode choisie.",
+                fill=c_doux, font=("Segoe UI", 11),
+            )
+            return
+
+        pad = 14
+        gap = 18
+        # Deux panneaux empiles : categories en haut (un peu plus grand),
+        # totaux mensuels en dessous.
+        top_h = int((height - gap) * 0.56)
+        bottom_y = pad + top_h + gap
+        bottom_h = height - bottom_y - pad
+
+        self._draw_category_bars(canvas, rows, accents, c_texte, c_doux, c_bordure,
+                                 pad, pad, width - 2 * pad, top_h - pad)
+        self._draw_monthly_bars(canvas, rows, months, accents, c_texte, c_doux, c_bordure,
+                                pad, bottom_y, width - 2 * pad, bottom_h)
+
+    def _draw_category_bars(self, canvas, rows, accents, c_texte, c_doux, c_bordure,
+                            x0, y0, w, h):
+        """Histogramme horizontal des depenses par categorie (barres
+        proportionnelles au total). Affiche les categories les plus
+        depensieres en premier (rows est deja trie par total decroissant) et
+        se limite au nombre qui tient lisiblement dans la hauteur disponible."""
+        canvas.create_text(x0, y0, text="Depenses par categorie", anchor="nw",
+                           fill=c_texte, font=("Segoe UI", 10, "bold"))
+        top = y0 + 22
+        avail_h = h - 22
+        if avail_h <= 0:
+            return
+        row_h = 24
+        max_rows = max(1, min(len(rows), avail_h // row_h))
+        shown = rows[:max_rows]
+        max_total = max((r["total"] for r in shown), default=0.0) or 1.0
+
+        # Largeur reservee au libelle a gauche et au montant a droite, pour
+        # que les barres ne recouvrent jamais le texte.
+        label_w = min(160, int(w * 0.32))
+        amount_w = 90
+        bar_x = x0 + label_w
+        bar_max = max(10, w - label_w - amount_w)
+
+        for i, r in enumerate(shown):
+            cy = top + i * row_h + row_h // 2
+            name = r["name"]
+            if len(name) > 22:
+                name = name[:21] + "…"
+            canvas.create_text(x0, cy, text=name, anchor="w", fill=c_texte,
+                               font=("Segoe UI", 9))
+            bar_len = max(2, int(bar_max * (r["total"] / max_total)))
+            color = accents[i % len(accents)]
+            canvas.create_rectangle(bar_x, cy - 8, bar_x + bar_len, cy + 8,
+                                    fill=color, outline="")
+            canvas.create_text(bar_x + bar_len + 6, cy, text=bg.format_amount(r["total"]),
+                               anchor="w", fill=c_doux, font=("Segoe UI", 8))
+
+    def _draw_monthly_bars(self, canvas, rows, months, accents, c_texte, c_doux, c_bordure,
+                           x0, y0, w, h):
+        """Histogramme vertical de la depense totale mois par mois : pour
+        chaque mois de la periode, somme des depenses de toutes les
+        categories (memes chiffres que la colonne du tableau)."""
+        canvas.create_text(x0, y0, text="Depense totale par mois", anchor="nw",
+                           fill=c_texte, font=("Segoe UI", 10, "bold"))
+        if not months:
+            return
+        totals = [round(sum(r["amounts"].get(m, 0.0) for r in rows), 2) for m in months]
+        max_total = max(totals, default=0.0) or 1.0
+
+        chart_top = y0 + 22
+        # Espace reserve en bas pour les libelles de mois.
+        axis_y = y0 + h - 18
+        chart_h = axis_y - chart_top
+        if chart_h <= 10:
+            return
+        # Ligne de base (axe horizontal) via la couleur de bordure.
+        canvas.create_line(x0, axis_y, x0 + w, axis_y, fill=c_bordure)
+
+        n = len(months)
+        slot = w / n
+        bar_w = max(6, min(48, slot * 0.55))
+        for i, (m, total) in enumerate(zip(months, totals)):
+            cx = x0 + slot * (i + 0.5)
+            bar_h = int(chart_h * (total / max_total))
+            color = accents[i % len(accents)]
+            if bar_h > 0:
+                canvas.create_rectangle(cx - bar_w / 2, axis_y - bar_h,
+                                        cx + bar_w / 2, axis_y, fill=color, outline="")
+            # Montant au-dessus de la barre (seulement si non nul, pour ne pas
+            # surcharger).
+            if total > 0:
+                canvas.create_text(cx, axis_y - bar_h - 8, text=bg.format_amount(total),
+                                   fill=c_doux, font=("Segoe UI", 7))
+            canvas.create_text(cx, axis_y + 9, text=bg.month_abbreviation(m),
+                               fill=c_doux, font=("Segoe UI", 8))
+
     # -- onglet Vue annuelle ----------------------------------------------------
 
     def _build_annual_tab(self):
@@ -1786,7 +1940,7 @@ class EnveloppeApp:
 
         ttk.Label(
             frame, text="Montant assigne a chaque categorie, mois par mois, sur toute l'annee.",
-            foreground="#666",
+            foreground=opl_theme.couleur("texte_doux"),
         ).pack(anchor="w", padx=10, pady=(0, 10))
 
     def _change_annual_year(self, delta: int):
