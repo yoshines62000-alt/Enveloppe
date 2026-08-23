@@ -123,7 +123,7 @@ class EnveloppeApp:
             except Exception:
                 pass
 
-        opl_theme.entete(self.root, "Enveloppe", "Budget par enveloppes", on_contact=lambda: opl_contact.ouvrir(self.root, app="Enveloppe", version=APP_VERSION)).pack(fill="x", side="top")
+        opl_theme.entete(self.root, "Enveloppe", "Budget par enveloppes", on_contact=lambda: opl_contact.ouvrir(self.root, app="Enveloppe", version=APP_VERSION), slug="enveloppe", version=APP_VERSION).pack(fill="x", side="top")
 
         bottom_bar = ttk.Frame(self.root)
         bottom_bar.pack(fill=X, side="bottom")
