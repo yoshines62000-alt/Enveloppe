@@ -19,6 +19,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import budget as bg
+import opl_theme
 import gui
 
 
@@ -450,7 +451,9 @@ class GuiSmokeTestCase(unittest.TestCase):
     # atteindre).
 
     def _select_tab(self, tab):
-        notebook = next(w for w in self.root.winfo_children() if w.winfo_class() == "TNotebook")
+        # Le rail est un ttk.Frame : winfo_class() rend "TFrame", pas
+        # "TNotebook". On le reconnait a son TYPE.
+        notebook = next(w for w in self.root.winfo_children() if isinstance(w, opl_theme.Rail))
         notebook.select(tab)
         self.root.update_idletasks()
         self.root.update()

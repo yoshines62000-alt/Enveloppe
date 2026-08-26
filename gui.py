@@ -100,7 +100,7 @@ class EnveloppeApp:
     def __init__(self, root: Tk):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1000x680")
+        self.root.geometry("1170x680")
         # Sans minsize, la fenetre pouvait etre reduite a n'importe quelle
         # taille (verifie jusqu'a 400x300 lors de l'audit) : les intitules
         # d'onglets se tronquaient, et surtout l'indicateur "Reste a
@@ -111,7 +111,7 @@ class EnveloppeApp:
         # depointer") restent entierement lisibles avec de la marge, sans
         # troncature - voir tests/test_gui_smoke.py pour la verification
         # verrouillee.
-        self.root.minsize(950, 620)
+        self.root.minsize(1120, 620)
 
         self.db = Database(_data_dir() / "enveloppe.sqlite")
         self.current_month = bg.current_month()
@@ -153,7 +153,7 @@ class EnveloppeApp:
         )
         overspent_label.pack(fill=X, padx=10, pady=(6, 0))
 
-        notebook = ttk.Notebook(self.root)
+        notebook = opl_theme.Rail(self.root)
         notebook.pack(fill=BOTH, expand=True, padx=8, pady=8)
 
         self.accounts_tab = ttk.Frame(notebook)
@@ -165,12 +165,12 @@ class EnveloppeApp:
         self.recurring_tab = ttk.Frame(notebook)
         self.settings_tab = ttk.Frame(notebook)
 
-        notebook.add(self.accounts_tab, text="Comptes")
+        notebook.add(self.accounts_tab, text="Comptes", groupe="La structure")
         notebook.add(self.categories_tab, text="Categories")
-        notebook.add(self.budget_tab, text="Budget")
+        notebook.add(self.budget_tab, text="Budget", groupe="Le mois")
         notebook.add(self.transactions_tab, text="Transactions")
         notebook.add(self.recurring_tab, text="Recurrentes")
-        notebook.add(self.reports_tab, text="Rapports")
+        notebook.add(self.reports_tab, text="Rapports", groupe="Le recul")
         notebook.add(self.annual_tab, text="Vue annuelle")
         notebook.add(self.settings_tab, text="Parametres")
 
