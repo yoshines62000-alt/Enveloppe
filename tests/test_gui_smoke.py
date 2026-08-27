@@ -189,6 +189,12 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.mock_info = self.info_patcher.start()
         self.addCleanup(self.warning_patcher.stop)
         self.addCleanup(self.info_patcher.stop)
+        # Les comptes rendus qui portent une consigne ou enumerent des lignes
+        # ignorees passent par opl_theme.message, pas par messagebox.
+        # Signature (parent, titre, texte) : le corps est en position 2.
+        self.message_patcher = patch.object(gui.opl_theme, "message")
+        self.mock_message = self.message_patcher.start()
+        self.addCleanup(self.message_patcher.stop)
 
     def _new_dialog(self, action):
         before = set(self.root.winfo_children())
@@ -247,7 +253,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         with patch("tkinter.filedialog.asksaveasfilename", return_value=str(dest)):
             self.app._backup_database()
         self.assertTrue(dest.exists())
-        self.mock_info.assert_called_once()
+        self.mock_message.assert_called_once()
 
         from db import Database
         restored = Database(dest)
@@ -815,6 +821,21 @@ class GuiSmokeTestCase(unittest.TestCase):
 
     # -- optimisation audit Phase 3 : import CSV en arriere-plan ------------
 
+    def _laisser_le_demarrage_finir(self):
+        """Fait tourner les `after()` poses par __init__ (verification du
+        temoin d'import, generation des recurrentes) et oublie ce qu'ils ont
+        annonce. En production ils tournent 100 a 200 ms apres l'ouverture,
+        avant tout geste de l'utilisateur ; dans un test ils attendent le
+        premier `root.update()`, qui arrive souvent en plein milieu de
+        l'action testee."""
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not self.mock_message.called:
+            self.root.update()
+            time.sleep(0.01)
+        self.mock_message.reset_mock()
+        self.mock_info.reset_mock()
+        self.mock_warning.reset_mock()
+
     def _pump_until(self, condition, timeout=30.0):
         """Fait tourner la vraie boucle d'evenements Tk (root.update()) par
         petites tranches jusqu'a ce que `condition()` devienne vraie -
@@ -866,6 +887,7 @@ class GuiSmokeTestCase(unittest.TestCase):
             time.sleep(0.3)
             return {"imported": 1, "skipped": [], "duplicates": []}
 
+        self._laisser_le_demarrage_finir()
         with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
              patch.object(gui, "import_transactions_csv", side_effect=slow_import):
             started = time.monotonic()
@@ -878,7 +900,7 @@ class GuiSmokeTestCase(unittest.TestCase):
             self.assertEqual(str(self.app.import_csv_button["state"]), "disabled")
             self.assertEqual(self.app.import_status_var.get(), "Import en cours...")
 
-            self._pump_until(lambda: self.mock_info.called)
+            self._pump_until(lambda: self.mock_message.called)
 
         self.assertEqual(str(self.app.import_csv_button["state"]), "normal")
         self.assertEqual(self.app.import_status_var.get(), "")
@@ -903,11 +925,12 @@ class GuiSmokeTestCase(unittest.TestCase):
             tick_count[0] += 1
             self.root.after(20, tick)
 
+        self._laisser_le_demarrage_finir()
         with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
              patch.object(gui, "import_transactions_csv", side_effect=slow_import):
             self.app._import_transactions_csv()
             self.root.after(20, tick)
-            self._pump_until(lambda: self.mock_info.called)
+            self._pump_until(lambda: self.mock_message.called)
 
         self.assertGreater(tick_count[0], 3, "la boucle d'evenements Tk semble bloquee pendant l'import")
 
@@ -923,12 +946,13 @@ class GuiSmokeTestCase(unittest.TestCase):
             ["", "2026-01-06", "Compte", "", "Test 2", "", "-5.00", "Non"],
         ])
 
+        self._laisser_le_demarrage_finir()
         with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)):
             self.app._import_transactions_csv()
-            self._pump_until(lambda: self.mock_info.called)
+            self._pump_until(lambda: self.mock_message.called)
 
-        self.mock_info.assert_called_once()
-        message = self.mock_info.call_args[0][1]
+        self.mock_message.assert_called_once()
+        message = self.mock_message.call_args[0][2]
         self.assertIn("2 transaction(s) importee(s)", message)
         self.assertEqual(len(self.app.db.list_transactions()), 2)
 
@@ -950,11 +974,12 @@ class GuiSmokeTestCase(unittest.TestCase):
         marker_path = self.app._csv_import_marker_path()
         self.assertFalse(marker_path.exists())
 
+        self._laisser_le_demarrage_finir()
         with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
              patch.object(gui, "import_transactions_csv", side_effect=slow_import):
             self.app._import_transactions_csv()
             self.assertTrue(marker_path.exists(), "le fichier temoin doit exister pendant l'import")
-            self._pump_until(lambda: self.mock_info.called)
+            self._pump_until(lambda: self.mock_message.called)
 
         self.assertFalse(marker_path.exists(), "le fichier temoin doit disparaitre une fois l'import termine")
 
@@ -969,7 +994,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         with patch("tkinter.filedialog.askopenfilename", return_value=str(csv_path)), \
              patch.object(gui, "import_transactions_csv", side_effect=failing_import):
             self.app._import_transactions_csv()
-            self._pump_until(lambda: self.mock_warning.called)
+            self._pump_until(lambda: self.mock_message.called)
 
         self.assertFalse(marker_path.exists(), "le fichier temoin doit disparaitre meme si l'import echoue")
 
@@ -984,14 +1009,14 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         self.app._check_stale_csv_import_marker()
 
-        self.mock_warning.assert_called_once()
-        warning_text = self.mock_warning.call_args[0][1]
+        self.mock_message.assert_called_once()
+        warning_text = self.mock_message.call_args[0][2]
         self.assertIn("releve.csv", warning_text)
         self.assertFalse(marker_path.exists(), "le fichier temoin doit etre supprime apres avertissement")
 
     def test_no_warning_at_startup_when_no_marker_file_is_present(self):
         self.app._check_stale_csv_import_marker()
-        self.mock_warning.assert_not_called()
+        self.mock_message.assert_not_called()
 
     # -- audit D41 : mise a jour incrementale du Treeview Transactions -------
     # Pointer/depointer et supprimer une transaction ne reconstruisent plus

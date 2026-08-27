@@ -1283,7 +1283,9 @@ class EnveloppeApp:
             message += "\n".join(f"  ligne {s['line']} : {s['reason']}" for s in result["skipped"][:10])
             if len(result["skipped"]) > 10:
                 message += f"\n  ... et {len(result['skipped']) - 10} autre(s)."
-        messagebox.showinfo(APP_TITLE, message)
+        # Ce rapport ENUMERE les doublons et les lignes ignorees, avec
+        # leur numero et leur raison : il ne tient pas sur une ligne.
+        opl_theme.message(self.root, "Import termine", message, ton="info")
 
     def _check_stale_csv_import_marker(self):
         """Avertit si un import CSV precedent ne s'est pas termine
@@ -1313,8 +1315,8 @@ class EnveloppeApp:
             pass
         source = info.get("source_file", "(fichier inconnu)")
         started_at = info.get("started_at", "date inconnue")
-        messagebox.showwarning(
-            APP_TITLE,
+        opl_theme.message(
+            self.root, "Import precedent interrompu",
             "Un import CSV precedent ne semble pas s'etre termine normalement.\n\n"
             f"Fichier : {source}\nDemarre le : {started_at}\n\n"
             "Si l'application a ete interrompue brutalement (coupure de courant, "
@@ -1323,7 +1325,7 @@ class EnveloppeApp:
             "importees et, si besoin, reimportez le meme fichier CSV : les "
             "transactions deja presentes seront automatiquement ignorees comme "
             "doublons.",
-        )
+            ton="alerte")
 
     def _refresh_transaction_account_choices(self):
         accounts, labels = self._account_choices()
@@ -2175,13 +2177,16 @@ class EnveloppeApp:
                 f"Impossible d'enregistrer la sauvegarde : {exc}",
                 ton="erreur")
             return
-        messagebox.showinfo(
-            APP_TITLE,
+        # Porte une CONSIGNE de restauration : une barre d'etat la
+        # tronquerait, et c'est precisement ce qu'il faudra relire le jour ou
+        # la sauvegarde servira.
+        opl_theme.message(
+            self.root, "Sauvegarde enregistree",
             f"Sauvegarde enregistree :\n{path}\n\n"
-            "Pour restaurer : utilisez le bouton 'Restaurer une sauvegarde...' "
+            "Pour restaurer : utilisez le bouton « Restaurer une sauvegarde... » "
             "juste en dessous, ou fermez Enveloppe et remplacez manuellement le "
             "fichier de donnees actif par cette copie.",
-        )
+            ton="info")
 
     def _restore_database(self):
         """Restaure une sauvegarde choisie par l'utilisateur par-dessus les
