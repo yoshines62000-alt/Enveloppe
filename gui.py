@@ -1364,16 +1364,19 @@ class EnveloppeApp:
         transaction_id = int(selection[0])
         tx = self.db.get_transaction(transaction_id)
         if tx is not None and tx["transfer_id"] is not None:
-            if not messagebox.askyesno(
-                APP_TITLE,
+            if not opl_theme.dialogue(
+                self.root, "Supprimer un virement",
                 "Cette transaction fait partie d'un virement entre deux comptes.\n"
                 "Supprimer les deux jambes liees du virement ?",
-            ):
+                confirmer="Supprimer les deux jambes", danger=True):
                 return
             removed_ids = [transaction_id, tx["transfer_id"]]
             self.db.delete_transfer_pair(transaction_id)
         else:
-            if not messagebox.askyesno(APP_TITLE, "Supprimer cette transaction ?"):
+            if not opl_theme.dialogue(
+                self.root, "Supprimer une transaction",
+                "Supprimer cette transaction ?",
+                confirmer="Supprimer la transaction", danger=True):
                 return
             removed_ids = [transaction_id]
             self.db.delete_transaction(transaction_id)
@@ -1480,12 +1483,12 @@ class EnveloppeApp:
             # totalement l'edition (une correction de coquille apres coup
             # reste un besoin legitime) - l'utilisateur choisit en
             # connaissance de cause.
-            if not messagebox.askyesno(
-                APP_TITLE,
+            if not opl_theme.dialogue(
+                self.root, "Transaction deja pointee",
                 "Cette transaction est pointee (rapprochee avec votre releve bancaire).\n"
                 "La modifier peut fausser le solde pointe affiche.\n\n"
                 "Continuer quand meme ?",
-            ):
+                confirmer="Modifier quand meme", danger=True):
                 return
         existing_splits = self.db.get_transaction_splits(transaction_id)
         is_split = bool(existing_splits)
@@ -1675,7 +1678,10 @@ class EnveloppeApp:
         if not selection:
             messagebox.showinfo(APP_TITLE, "Selectionnez un modele d'abord.")
             return
-        if not messagebox.askyesno(APP_TITLE, "Supprimer ce modele de transaction recurrente ?"):
+        if not opl_theme.dialogue(
+            self.root, "Supprimer un modele recurrent",
+            "Supprimer ce modele de transaction recurrente ?",
+            confirmer="Supprimer le modele", danger=True):
             return
         self.db.delete_recurring_transaction(int(selection[0]))
         self._refresh_recurring()
@@ -2152,8 +2158,8 @@ class EnveloppeApp:
             )
             return
 
-        if not messagebox.askyesno(
-            APP_TITLE,
+        if not opl_theme.dialogue(
+            self.root, "Remplacer toutes vos donnees",
             "Restaurer cette sauvegarde va REMPLACER definitivement toutes les "
             "donnees actuelles (comptes, categories, budgets, transactions) par "
             "le contenu de ce fichier.\n\n"
@@ -2161,7 +2167,7 @@ class EnveloppeApp:
             "Une copie de securite des donnees actuelles sera d'abord enregistree "
             "automatiquement a cote du fichier de donnees, pour permettre de "
             "revenir en arriere si necessaire. Continuer ?",
-        ):
+            confirmer="Restaurer la sauvegarde", danger=True):
             return
 
         # Copie temporaire sur le MEME dossier (donc le meme volume) que

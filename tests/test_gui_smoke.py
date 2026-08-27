@@ -239,7 +239,7 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         active_path = Path(self.app.db.path)
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
-             patch("tkinter.messagebox.askyesno", return_value=True):
+             patch("opl_theme.dialogue", return_value=True):
             self.app._restore_database()
 
         # La restauration reste sur le MEME fichier de donnees actif (pas de
@@ -267,7 +267,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         backup_db.close()
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
-             patch("tkinter.messagebox.askyesno", return_value=False):
+             patch("opl_theme.dialogue", return_value=False):
             self.app._restore_database()
 
         names = [a["name"] for a in self.app.db.list_accounts()]
@@ -330,7 +330,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         files_before = set(active_path.parent.iterdir())
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
-             patch("tkinter.messagebox.askyesno", return_value=True):
+             patch("opl_theme.dialogue", return_value=True):
             self.app._restore_database()
 
         new_files = set(active_path.parent.iterdir()) - files_before
@@ -375,7 +375,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         original_bytes = active_path.read_bytes()
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
-             patch("tkinter.messagebox.askyesno", return_value=True), \
+             patch("opl_theme.dialogue", return_value=True), \
              patch("tkinter.messagebox.showerror") as mock_error, \
              patch("os.replace", side_effect=OSError("disque plein simule")):
             self.app._restore_database()
@@ -404,7 +404,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         backup_db.close()
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
-             patch("tkinter.messagebox.askyesno", return_value=True), \
+             patch("opl_theme.dialogue", return_value=True), \
              patch("tkinter.messagebox.showerror") as mock_error, \
              patch("shutil.copy2", side_effect=OSError("disque plein simule")):
             self.app._restore_database()
@@ -660,7 +660,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app._refresh_transactions()
         self.app.transactions_tree.selection_set(str(tx_id))
 
-        with patch("tkinter.messagebox.askyesno", return_value=True) as mock_yes:
+        with patch("opl_theme.dialogue", return_value=True) as mock_yes:
             dialog = self._new_dialog(lambda: self.app._edit_transaction())
         try:
             mock_yes.assert_called_once()
@@ -678,7 +678,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app.transactions_tree.selection_set(str(tx_id))
 
         before = set(self.root.winfo_children())
-        with patch("tkinter.messagebox.askyesno", return_value=False) as mock_yes:
+        with patch("opl_theme.dialogue", return_value=False) as mock_yes:
             self.app._edit_transaction()
         after = set(self.root.winfo_children()) - before
         mock_yes.assert_called_once()
@@ -690,7 +690,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app._refresh_transactions()
         self.app.transactions_tree.selection_set(str(tx_id))
 
-        with patch("tkinter.messagebox.askyesno") as mock_yes:
+        with patch("opl_theme.dialogue") as mock_yes:
             dialog = self._new_dialog(lambda: self.app._edit_transaction())
         try:
             mock_yes.assert_not_called()
@@ -967,7 +967,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app._refresh_transactions()
         self.app.transactions_tree.selection_set(str(tx1))
 
-        with patch("tkinter.messagebox.askyesno", return_value=True), \
+        with patch("opl_theme.dialogue", return_value=True), \
              patch.object(self.app, "_refresh_transactions") as mock_refresh:
             self.app._delete_transaction()
 
@@ -989,7 +989,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.assertFalse(self.app.transactions_tree.exists(str(in_id)))
         self.app.transactions_tree.selection_set(str(out_id))
 
-        with patch("tkinter.messagebox.askyesno", return_value=True):
+        with patch("opl_theme.dialogue", return_value=True):
             self.app._delete_transaction()
 
         self.assertFalse(self.app.transactions_tree.exists(str(out_id)))
