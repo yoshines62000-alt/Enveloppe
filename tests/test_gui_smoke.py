@@ -51,6 +51,18 @@ def tearDownModule():
 # ----------------------------------------------------------------------------
 
 
+def _trouver_erreur(widget):
+    """L'`opl_theme.Erreur` d'un dialogue : les erreurs de saisie ne sont plus
+    des modales, on affirme sur le composant que l'utilisateur voit."""
+    if isinstance(widget, gui.opl_theme.Erreur):
+        return widget
+    for enfant in widget.winfo_children():
+        trouve = _trouver_erreur(enfant)
+        if trouve is not None:
+            return trouve
+    return None
+
+
 def _collect_widgets(widget, cls_name):
     """Widgets de classe Tk `cls_name` (ex: 'TEntry', 'TButton') sous
     `widget`, en profondeur, dans l'ordre de creation."""
@@ -335,9 +347,12 @@ class GuiSmokeTestCase(unittest.TestCase):
 
     def test_restore_refuses_selecting_the_currently_active_database_file(self):
         active_path = str(self.app.db.path)
-        with patch("tkinter.filedialog.askopenfilename", return_value=active_path):
+        with patch("tkinter.filedialog.askopenfilename", return_value=active_path),              patch.object(gui.opl_theme, "message") as refus:
             self.app._restore_database()
-        self.mock_warning.assert_called_once()
+        # Refus d'une operation destructrice : un message a lire, pas une
+        # erreur de saisie — l'utilisateur a designe le fichier actif lui-meme.
+        refus.assert_called_once()
+        self.assertIn("deja le fichier", refus.call_args[0][2])
 
     # -- audit : remplacement atomique + copie de securite automatique -------
     # Jusqu'ici, la restauration ecrasait le fichier actif directement via
@@ -651,9 +666,9 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         self.app._add_transaction()
 
-        self.mock_warning.assert_called_once()
-        warning_message = self.mock_warning.call_args[0][1]
-        self.assertIn("fini", warning_message)
+        # L'erreur reste dans la vue, sous le formulaire, et marque le champ.
+        self.assertTrue(self.app.tx_erreur.visible)
+        self.assertIn("fini", self.app.tx_erreur.texte)
         self.assertEqual(len(self.app.db.list_transactions()), before_count)
         self.assertEqual(self.app.db.account_balance(account_id), 1000.0)
 
@@ -669,9 +684,9 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         self.app._add_transaction()  # ne doit pas lever d'exception
 
-        self.mock_warning.assert_called_once()
-        warning_message = self.mock_warning.call_args[0][1]
-        self.assertIn("fini", warning_message)
+        # L'erreur reste dans la vue, sous le formulaire, et marque le champ.
+        self.assertTrue(self.app.tx_erreur.visible)
+        self.assertIn("fini", self.app.tx_erreur.texte)
         self.assertEqual(len(self.app.db.list_transactions()), before_count)
         self.assertEqual(self.app.db.account_balance(account_id), 1000.0)
 
@@ -1163,10 +1178,10 @@ class GuiSmokeTestCase(unittest.TestCase):
             entry = _collect_widgets(dialog, "TEntry")[0]
             _set_entry(entry, "pas un nombre")
             _click_button(dialog, "Enregistrer")
-            self.mock_warning.assert_called_once()
-            message = self.mock_warning.call_args[0][1]
-            self.assertIn("nombre", message)
-            self.assertNotIn("Illegal value", message)
+            erreur = _trouver_erreur(dialog)
+            self.assertTrue(erreur.visible)
+            self.assertIn("nombre", erreur.texte)
+            self.assertNotIn("Illegal value", erreur.texte)
             self.assertTrue(dialog.winfo_exists(), "le dialogue doit rester ouvert apres une saisie invalide")
         finally:
             dialog.destroy()

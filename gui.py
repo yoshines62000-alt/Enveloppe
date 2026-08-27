@@ -363,16 +363,23 @@ class EnveloppeApp:
         entry.select_range(0, "end")
 
         def on_confirm(event=None):
+            erreur.effacer()
             try:
                 value = self._parse_float(value_var.get(), "Le montant")
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                erreur.montrer("Montant", str(exc), champ=entry)
                 return
             dialog.destroy()
             on_save(value)
 
+        # Dialogue en `grid` : l'erreur vit dans une porte, son `pack()`
+        # interne entrerait sinon en conflit avec le gestionnaire du parent.
+        porte = ttk.Frame(dialog)
+        porte.grid(row=2, column=0, columnspan=2, sticky="we")
+        erreur = opl_theme.Erreur(porte)
+
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=2, column=0, pady=10)
+        buttons.grid(row=3, column=0, pady=10)
         ttk.Button(buttons, text="Enregistrer", command=on_confirm).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         entry.bind("<Return>", on_confirm)
@@ -502,7 +509,9 @@ class EnveloppeApp:
     def _toggle_account_archived(self):
         selection = self.accounts_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez un compte d'abord.")
+            self.statut.dire(
+                "Selectionnez un compte d'abord.",
+                ton="alerte")
             return
         account_id = int(selection[0])
         account = self.db.get_account(account_id)
@@ -601,7 +610,9 @@ class EnveloppeApp:
     def _toggle_category_archived(self):
         selection = self.categories_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez une categorie d'abord.")
+            self.statut.dire(
+                "Selectionnez une categorie d'abord.",
+                ton="alerte")
             return
         category_id = int(selection[0])
         category = self.db.get_category(category_id)
@@ -811,7 +822,11 @@ class EnveloppeApp:
     def _open_move_between_envelopes_dialog(self):
         categories, category_labels = self._move_dialog_category_choices()
         if len(categories) < 2:
-            messagebox.showwarning(APP_TITLE, "Il faut au moins deux categories pour deplacer de l'argent.")
+            # Precondition, pas une erreur de saisie : le dialogue ne s'ouvre
+            # meme pas, il n'y a aucun champ a designer.
+            self.statut.dire(
+                "Il faut au moins deux categories pour deplacer de l'argent.",
+                ton="alerte")
             return
 
         # Pre-selectionne la categorie de la ligne choisie dans le tableau,
@@ -842,11 +857,13 @@ class EnveloppeApp:
             dialog, text=f"Mois : {bg.month_label(self.current_month)}", font=("Segoe UI", 10, "bold"),
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 0))
         ttk.Label(dialog, text="Categorie source").grid(row=1, column=0, sticky="w", padx=10, pady=(5, 0))
-        ttk.Combobox(dialog, textvariable=from_var, values=category_labels, width=25, state="readonly").grid(row=1, column=1, padx=10, pady=(5, 0))
+        from_combo = ttk.Combobox(dialog, textvariable=from_var, values=category_labels, width=25, state="readonly")
+        from_combo.grid(row=1, column=1, padx=10, pady=(5, 0))
         ttk.Label(dialog, text="Categorie destination").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
         ttk.Combobox(dialog, textvariable=to_var, values=category_labels, width=25, state="readonly").grid(row=2, column=1, padx=10, pady=(5, 0))
         ttk.Label(dialog, text="Montant").grid(row=3, column=0, sticky="w", padx=10, pady=(5, 0))
-        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
+        move_amount_entry = ttk.Entry(dialog, textvariable=amount_var, width=15)
+        move_amount_entry.grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
         ttk.Label(
             dialog,
             text="Deplacer plus que le disponible est permis : le 'Budgete' de la source devient negatif, a combler plus tard.",
@@ -854,22 +871,32 @@ class EnveloppeApp:
         ).grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 0))
 
         def on_save():
+            erreur.effacer()
             from_id = self._parse_id(from_var.get())
             to_id = self._parse_id(to_var.get())
             if from_id is None or to_id is None:
-                messagebox.showwarning(APP_TITLE, "Choisissez une categorie source et une destination.", parent=dialog)
+                erreur.montrer("Categories",
+                               "choisissez d'ou vient l'argent et ou il va.",
+                               champ=from_combo)
                 return
             try:
                 amount = self._parse_float(amount_var.get(), "Le montant")
                 bg.move_between_envelopes(self.db, from_id, to_id, self.current_month, amount)
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                erreur.montrer("Montant", str(exc), champ=move_amount_entry)
                 return
             dialog.destroy()
             self._refresh_budget()
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=5, column=0, columnspan=2, pady=10)
+
+        # Dialogue en `grid` : l'erreur vit dans une porte, son `pack()`
+        # interne entrerait sinon en conflit avec le gestionnaire du parent.
+        porte = ttk.Frame(dialog)
+        porte.grid(row=5, column=0, columnspan=2, sticky="we")
+        erreur = opl_theme.Erreur(porte)
+
+        buttons.grid(row=6, column=0, columnspan=2, pady=10)
         ttk.Button(buttons, text="Deplacer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         # Entree valide, Echap annule (audit D33) - lies sur le Toplevel
@@ -924,7 +951,7 @@ class EnveloppeApp:
         payee_entry = ttk.Entry(form, textvariable=self.tx_payee_var, width=25)
         payee_entry.grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
         ttk.Label(form, text="Montant (negatif = depense)").grid(row=1, column=3, sticky="w", pady=(5, 0))
-        amount_entry = ttk.Entry(form, textvariable=self.tx_amount_var, width=12)
+        self.tx_amount_entry = amount_entry = ttk.Entry(form, textvariable=self.tx_amount_var, width=12)
         amount_entry.grid(row=1, column=4, pady=(5, 0))
         ttk.Button(form, text="Ajouter", command=self._add_transaction).grid(row=1, column=5, pady=(5, 0))
         # Entree valide le formulaire d'ajout de transaction depuis
@@ -934,6 +961,9 @@ class EnveloppeApp:
             self.tx_account_combo, self.tx_category_combo, date_entry, payee_entry, amount_entry,
         ):
             field.bind("<Return>", lambda e: self._add_transaction())
+
+        # Les erreurs de saisie restent SOUS le formulaire (voir _build_accounts_tab).
+        self.tx_erreur = opl_theme.Erreur(frame, apres=form)
 
         filter_frame = ttk.Frame(frame)
         filter_frame.pack(fill=X, padx=10)
@@ -985,14 +1015,22 @@ class EnveloppeApp:
     def _open_split_dialog(self):
         selection = self.transactions_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
+            self.statut.dire(
+                "Selectionnez une transaction d'abord.",
+                ton="alerte")
             return
         transaction_id = int(selection[0])
         tx = self.db.get_transaction(transaction_id)
         if tx is None:
             return
         if tx["transfer_id"] is not None:
-            messagebox.showwarning(APP_TITLE, "Une jambe de virement ne peut pas etre fractionnee.")
+            # Refus d'agir sur la ligne choisie, pas une erreur de saisie :
+            # aucun champ n'est fautif et la raison doit etre lue.
+            opl_theme.message(
+                self.root, "Fractionnement impossible",
+                "Cette ligne est l'une des deux moities d'un virement entre comptes. "
+                "Fractionner l'une sans l'autre desequilibrerait le virement.",
+                ton="alerte")
             return
 
         category_rows, category_labels = self._category_choices()
@@ -1040,7 +1078,8 @@ class EnveloppeApp:
             amount_entry.grid(row=row_index, column=1, padx=5, pady=2)
             memo_entry = ttk.Entry(rows_frame, textvariable=memo_var, width=18)
             memo_entry.grid(row=row_index, column=2, padx=5, pady=2)
-            split_rows.append({"category_var": category_var, "amount_var": amount_var, "memo_var": memo_var})
+            split_rows.append({"category_var": category_var, "amount_var": amount_var,
+                               "memo_var": memo_var, "amount_entry": amount_entry})
 
         if existing_splits:
             for split in existing_splits:
@@ -1060,7 +1099,7 @@ class EnveloppeApp:
                 try:
                     amount = self._parse_float(row["amount_var"].get(), "Chaque part")
                 except ValueError as exc:
-                    messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                    erreur.montrer("Parts", str(exc), champ=row.get("amount_entry"))
                     return
                 splits.append({
                     "category_id": self._parse_id(row["category_var"].get()),
@@ -1069,14 +1108,20 @@ class EnveloppeApp:
             try:
                 self.db.set_transaction_splits(transaction_id, splits)
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                erreur.montrer("Parts", str(exc))
                 return
             dialog.destroy()
             self._refresh_transactions()
             self._refresh_budget()
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=3, column=0, columnspan=3, pady=10)
+        # Dialogue en `grid` : l'erreur vit dans une porte, son `pack()`
+        # interne entrerait sinon en conflit avec le gestionnaire du parent.
+        porte = ttk.Frame(dialog)
+        porte.grid(row=3, column=0, columnspan=3, sticky="we")
+        erreur = opl_theme.Erreur(porte)
+
+        buttons.grid(row=4, column=0, columnspan=3, pady=10)
         ttk.Button(buttons, text="Enregistrer le fractionnement", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         # Entree valide, Echap annule (audit D33).
@@ -1304,16 +1349,19 @@ class EnveloppeApp:
         self._refresh_transactions()
 
     def _add_transaction(self):
+        self.tx_erreur.effacer()
         account_id = self._parse_id(self.tx_account_var.get())
         if account_id is None:
-            messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
+            self.tx_erreur.montrer(
+                "Compte", "choisissez le compte auquel rattacher cette operation.",
+                champ=self.tx_account_combo)
             return
         category_id = self._parse_id(self.tx_category_var.get())
         try:
             date_text = self._parse_iso_date(self.tx_date_var.get())
             amount = self._parse_nonzero_amount(self.tx_amount_var.get())
         except ValueError as exc:
-            messagebox.showwarning(APP_TITLE, str(exc))
+            self.tx_erreur.montrer("", str(exc), champ=self.tx_amount_entry)
             return
         self.db.add_transaction(account_id, date_text, amount, category_id=category_id, payee=self.tx_payee_var.get())
         self.tx_payee_var.set("")
@@ -1344,7 +1392,9 @@ class EnveloppeApp:
     def _toggle_transaction_cleared(self):
         selection = self.transactions_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
+            self.statut.dire(
+                "Selectionnez une transaction d'abord.",
+                ton="alerte")
             return
         # Bascule CHAQUE ligne selectionnee individuellement (pas seulement
         # la premiere) : un utilisateur qui multi-selectionne plusieurs
@@ -1374,7 +1424,9 @@ class EnveloppeApp:
     def _delete_transaction(self):
         selection = self.transactions_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez une transaction d'abord.")
+            self.statut.dire(
+                "Selectionnez une transaction d'abord.",
+                ton="alerte")
             return
         transaction_id = int(selection[0])
         tx = self.db.get_transaction(transaction_id)
@@ -1413,7 +1465,10 @@ class EnveloppeApp:
     def _open_transfer_dialog(self):
         accounts = self.db.list_accounts()
         if len(accounts) < 2:
-            messagebox.showwarning(APP_TITLE, "Il faut au moins deux comptes pour effectuer un virement.")
+            # Precondition : le dialogue ne s'ouvre meme pas.
+            self.statut.dire(
+                "Il faut au moins deux comptes pour effectuer un virement.",
+                ton="alerte")
             return
         account_labels = [f"{a['id']} - {a['name']}" for a in accounts]
 
@@ -1438,23 +1493,25 @@ class EnveloppeApp:
         ttk.Label(dialog, text="Date (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", padx=10, pady=(5, 0))
         ttk.Entry(dialog, textvariable=date_var, width=15).grid(row=2, column=1, sticky="w", padx=10, pady=(5, 0))
         ttk.Label(dialog, text="Montant").grid(row=3, column=0, sticky="w", padx=10, pady=(5, 0))
-        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
+        transfer_amount_entry = ttk.Entry(dialog, textvariable=amount_var, width=15)
+        transfer_amount_entry.grid(row=3, column=1, sticky="w", padx=10, pady=(5, 0))
         ttk.Label(dialog, text="Memo (optionnel)").grid(row=4, column=0, sticky="w", padx=10, pady=(5, 0))
         ttk.Entry(dialog, textvariable=memo_var, width=25).grid(row=4, column=1, padx=10, pady=(5, 0))
 
         def on_save():
+            erreur.effacer()
             from_id = self._parse_id(from_var.get())
             to_id = self._parse_id(to_var.get())
             try:
                 amount = self._parse_float(amount_var.get(), "Le montant")
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                erreur.montrer("Montant", str(exc), champ=transfer_amount_entry)
                 return
             date_text = date_var.get().strip()
             try:
                 self.db.add_transfer(from_id, to_id, date_text, amount, memo=memo_var.get().strip())
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc), parent=dialog)
+                erreur.montrer("", str(exc), champ=transfer_amount_entry)
                 return
             dialog.destroy()
             self._refresh_transactions()
@@ -1462,7 +1519,13 @@ class EnveloppeApp:
             self._refresh_budget()
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=5, column=0, columnspan=2, pady=10)
+        # Dialogue en `grid` : l'erreur vit dans une porte, son `pack()`
+        # interne entrerait sinon en conflit avec le gestionnaire du parent.
+        porte = ttk.Frame(dialog)
+        porte.grid(row=5, column=0, columnspan=2, sticky="we")
+        erreur = opl_theme.Erreur(porte)
+
+        buttons.grid(row=6, column=0, columnspan=2, pady=10)
         ttk.Button(buttons, text="Effectuer le virement", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         # Entree valide, Echap annule (audit D33).
@@ -1481,11 +1544,12 @@ class EnveloppeApp:
             # Ce dialogue generique ne sait pas repercuter un changement sur
             # l'autre jambe (compte/montant/date lies) - le modifier ici
             # desynchroniserait silencieusement le virement.
-            messagebox.showwarning(
-                APP_TITLE,
-                "Cette transaction fait partie d'un virement entre comptes.\n"
-                "Supprimez le virement (bouton 'Supprimer la transaction selectionnee') "
+            opl_theme.message(
+                self.root, "Modification impossible",
+                "Cette transaction fait partie d'un virement entre comptes.\n\n"
+                "Supprimez le virement (bouton « Supprimer la transaction selectionnee ») "
                 "puis recreez-le pour le modifier.",
+                ton="alerte",
             )
             return
         if tx["cleared"]:
@@ -1550,18 +1614,21 @@ class EnveloppeApp:
         ttk.Label(dialog, text="Beneficiaire").grid(row=3, column=0, sticky="w", padx=10)
         ttk.Entry(dialog, textvariable=payee_var, width=25).grid(row=3, column=1, padx=10)
         ttk.Label(dialog, text="Montant").grid(row=4, column=0, sticky="w", padx=10)
-        ttk.Entry(dialog, textvariable=amount_var, width=15).grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
+        edit_amount_entry = ttk.Entry(dialog, textvariable=amount_var, width=15)
+        edit_amount_entry.grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
 
         def on_save():
+            erreur.effacer()
             account_id = self._parse_id(account_var.get())
             if account_id is None:
-                messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
+                erreur.montrer("Compte", "choisissez le compte auquel rattacher cette operation.",
+                               champ=account_combo)
                 return
             try:
                 date_text = self._parse_iso_date(date_var.get())
                 amount = self._parse_nonzero_amount(amount_var.get())
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc))
+                erreur.montrer("", str(exc), champ=edit_amount_entry)
                 return
             update_kwargs = dict(
                 account_id=account_id, date=date_text, payee=payee_var.get().strip(), amount=amount,
@@ -1575,7 +1642,13 @@ class EnveloppeApp:
             self._refresh_budget()
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=5, column=0, columnspan=2, pady=(0, 10))
+        # Dialogue en `grid` : l'erreur vit dans une porte, son `pack()`
+        # interne entrerait sinon en conflit avec le gestionnaire du parent.
+        porte = ttk.Frame(dialog)
+        porte.grid(row=5, column=0, columnspan=2, sticky="we")
+        erreur = opl_theme.Erreur(porte)
+
+        buttons.grid(row=6, column=0, columnspan=2, pady=(0, 10))
         ttk.Button(buttons, text="Enregistrer", command=on_save).pack(side=LEFT, padx=5)
         ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side=LEFT, padx=5)
         # Entree valide, Echap annule (audit D33).
@@ -1617,7 +1690,7 @@ class EnveloppeApp:
         payee_entry = ttk.Entry(form, textvariable=self.rec_payee_var, width=25)
         payee_entry.grid(row=1, column=1, columnspan=2, sticky="we", pady=(5, 0))
         ttk.Label(form, text="Montant (negatif = depense)").grid(row=1, column=3, sticky="w", pady=(5, 0))
-        amount_entry = ttk.Entry(form, textvariable=self.rec_amount_var, width=12)
+        self.rec_amount_entry = amount_entry = ttk.Entry(form, textvariable=self.rec_amount_var, width=12)
         amount_entry.grid(row=1, column=4, pady=(5, 0))
         ttk.Label(form, text="Premiere echeance (AAAA-MM-JJ)").grid(row=2, column=0, sticky="w", pady=(5, 0))
         date_entry = ttk.Entry(form, textvariable=self.rec_date_var, width=12)
@@ -1629,6 +1702,8 @@ class EnveloppeApp:
             self.rec_account_combo, self.rec_category_combo, frequency_combo, payee_entry, amount_entry, date_entry,
         ):
             field.bind("<Return>", lambda e: self._add_recurring())
+
+        self.rec_erreur = opl_theme.Erreur(frame, apres=form)
 
         columns = ("id", "next_date", "frequency", "account", "payee", "category", "amount")
         self.recurring_tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
@@ -1669,16 +1744,19 @@ class EnveloppeApp:
             ))
 
     def _add_recurring(self):
+        self.rec_erreur.effacer()
         account_id = self._parse_id(self.rec_account_var.get())
         if account_id is None:
-            messagebox.showwarning(APP_TITLE, "Choisissez un compte.")
+            self.rec_erreur.montrer(
+                "Compte", "choisissez le compte sur lequel cette operation reviendra.",
+                champ=self.rec_account_combo)
             return
         category_id = self._parse_id(self.rec_category_var.get())
         try:
             date_text = self._parse_iso_date(self.rec_date_var.get())
             amount = self._parse_nonzero_amount(self.rec_amount_var.get())
         except ValueError as exc:
-            messagebox.showwarning(APP_TITLE, str(exc))
+            self.rec_erreur.montrer("", str(exc), champ=self.rec_amount_entry)
             return
         frequency = self._RECURRING_FREQUENCY_VALUES.get(self.rec_frequency_var.get(), "monthly")
         self.db.add_recurring_transaction(
@@ -1691,7 +1769,9 @@ class EnveloppeApp:
     def _delete_recurring(self):
         selection = self.recurring_tree.selection()
         if not selection:
-            messagebox.showinfo(APP_TITLE, "Selectionnez un modele d'abord.")
+            self.statut.dire(
+                "Selectionnez un modele d'abord.",
+                ton="alerte")
             return
         if not opl_theme.dialogue(
             self.root, "Supprimer un modele recurrent",
@@ -2146,7 +2226,13 @@ class EnveloppeApp:
         active_path = Path(self.db.path)
         try:
             if backup_path.resolve() == active_path.resolve():
-                messagebox.showwarning(APP_TITLE, "Le fichier selectionne est deja le fichier de donnees actif.")
+                # Refus d'une operation destructrice : rien a corriger dans un
+                # champ, l'utilisateur a designe le fichier actif lui-meme.
+                opl_theme.message(
+                    self.root, "Restauration inutile",
+                    "Ce fichier EST deja le fichier de donnees en cours d'utilisation : "
+                    "le restaurer sur lui-meme ne changerait rien.",
+                    ton="alerte")
                 return
         except OSError:
             pass
