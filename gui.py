@@ -2083,7 +2083,10 @@ class EnveloppeApp:
             # dialogue et le clic) remontait comme un plantage non gere au
             # lieu d'un message clair (meme motif que TempoFacture.Database.
             # backup_to / _backup_database).
-            messagebox.showerror(APP_TITLE, f"Impossible d'enregistrer la sauvegarde : {exc}")
+            opl_theme.message(
+                self.root, "Sauvegarde impossible",
+                f"Impossible d'enregistrer la sauvegarde : {exc}",
+                ton="erreur")
             return
         messagebox.showinfo(
             APP_TITLE,
@@ -2163,14 +2166,17 @@ class EnveloppeApp:
             finally:
                 probe.close()
         except sqlite3.Error as exc:
-            messagebox.showerror(APP_TITLE, f"Ce fichier n'est pas une base de donnees SQLite valide : {exc}")
+            opl_theme.message(
+                self.root, "Fichier non reconnu",
+                f"Ce fichier n'est pas une base de donnees SQLite valide : {exc}",
+                ton="erreur")
             return
         if "accounts" not in tables:
-            messagebox.showerror(
-                APP_TITLE,
+            opl_theme.message(
+                self.root, "Fichier non reconnu",
                 "Ce fichier ne semble pas etre une sauvegarde Enveloppe valide "
                 "(table 'accounts' introuvable).",
-            )
+                ton="erreur")
             return
 
         if not opl_theme.dialogue(
@@ -2225,7 +2231,10 @@ class EnveloppeApp:
             # genere distinct), mais reste gere par symetrie avec
             # _backup_database ci-dessus plutot que de laisser remonter une
             # exception non geree dans ce cas limite.
-            messagebox.showerror(APP_TITLE, f"Impossible de restaurer la sauvegarde : {exc}")
+            opl_theme.message(
+                self.root, "Restauration impossible",
+                f"Impossible de restaurer la sauvegarde : {exc}",
+                ton="erreur")
             try:
                 tmp_path.unlink(missing_ok=True)  # nettoyage best-effort du temporaire, jamais bloquant
             except OSError:

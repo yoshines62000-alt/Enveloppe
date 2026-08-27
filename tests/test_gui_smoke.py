@@ -22,6 +22,34 @@ import budget as bg
 import opl_theme
 import gui
 
+# --- FILET ANTI-BLOCAGE -----------------------------------------------------
+# `opl_theme.message()` dessine une vraie fenetre modale qui attend un clic.
+# Un test qui emprunte un chemin d'erreur ferait pendre la suite ENTIERE : pas
+# d'echec, pas de trace, juste une execution qui ne finit jamais. On neutralise
+# donc le composant pour tout ce module. Les tests qui verifient un message le
+# repatchent localement — un patch imbrique prend le pas sur celui-ci.
+_filet_message = None
+
+
+def setUpModule():
+    # Imports locaux : les fichiers hotes ne nomment pas ces modules de la
+    # meme facon (`patch` ou `mock.patch`, `gui` ou `gui as gui_mod`, ou pas de
+    # gui du tout). `opl_theme` est le meme objet module que `gui.opl_theme`,
+    # le patch porte donc des deux cotes.
+    from unittest.mock import patch as _patch
+
+    import opl_theme as _theme
+
+    global _filet_message
+    _filet_message = _patch.object(_theme, "message")
+    _filet_message.start()
+
+
+def tearDownModule():
+    if _filet_message is not None:
+        _filet_message.stop()
+# ----------------------------------------------------------------------------
+
 
 def _collect_widgets(widget, cls_name):
     """Widgets de classe Tk `cls_name` (ex: 'TEntry', 'TButton') sous
@@ -215,7 +243,7 @@ class GuiSmokeTestCase(unittest.TestCase):
     def test_backup_button_shows_an_error_instead_of_crashing_when_the_destination_is_invalid(self):
         bogus = self.tmp / "dossier_inexistant" / "copie.sqlite"
         with patch("tkinter.filedialog.asksaveasfilename", return_value=str(bogus)), \
-             patch("tkinter.messagebox.showerror") as mock_error:
+             patch.object(gui.opl_theme, "message") as mock_error:
             self.app._backup_database()
         mock_error.assert_called_once()
 
@@ -285,7 +313,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         self.app.db.add_account("Compte original", starting_balance=100.0)
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(bogus)), \
-             patch("tkinter.messagebox.showerror") as mock_error:
+             patch.object(gui.opl_theme, "message") as mock_error:
             self.app._restore_database()
         mock_error.assert_called_once()
         names = [a["name"] for a in self.app.db.list_accounts()]
@@ -301,7 +329,7 @@ class GuiSmokeTestCase(unittest.TestCase):
         conn.close()
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(other_db_path)), \
-             patch("tkinter.messagebox.showerror") as mock_error:
+             patch.object(gui.opl_theme, "message") as mock_error:
             self.app._restore_database()
         mock_error.assert_called_once()
 
@@ -378,7 +406,7 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
              patch("opl_theme.dialogue", return_value=True), \
-             patch("tkinter.messagebox.showerror") as mock_error, \
+             patch.object(gui.opl_theme, "message") as mock_error, \
              patch("os.replace", side_effect=OSError("disque plein simule")):
             self.app._restore_database()
 
@@ -407,7 +435,7 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         with patch("tkinter.filedialog.askopenfilename", return_value=str(backup_path)), \
              patch("opl_theme.dialogue", return_value=True), \
-             patch("tkinter.messagebox.showerror") as mock_error, \
+             patch.object(gui.opl_theme, "message") as mock_error, \
              patch("shutil.copy2", side_effect=OSError("disque plein simule")):
             self.app._restore_database()
 
@@ -759,11 +787,23 @@ class GuiSmokeTestCase(unittest.TestCase):
 
     # -- optimisation audit Phase 3 : import CSV en arriere-plan ------------
 
-    def _pump_until(self, condition, timeout=5.0):
+    def _pump_until(self, condition, timeout=30.0):
         """Fait tourner la vraie boucle d'evenements Tk (root.update()) par
         petites tranches jusqu'a ce que `condition()` devienne vraie -
         equivalent d'une attente active du thread de fond, sans jamais
-        appeler mainloop() (qui bloquerait le test)."""
+        appeler mainloop() (qui bloquerait le test).
+
+        Le delai etait de 5 s et c'etait trop court, mesure plutot que devine :
+        l'import CSV attend 12,89 s quand le module des graphiques a tourne
+        avant lui, contre 0,1 a 0,4 s pour les autres attentes de ce fichier.
+        La lenteur N'EST PAS dans le thread de fond — sonde a 1,09 s — mais
+        dans les trois rafraichissements d'interface que _poll_csv_import
+        enchaine avant d'annoncer le resultat.
+
+        ⚠️ Ce cout est ANTERIEUR a tout ce chantier : mesure a 12,86 s sur le
+        HEAD commite, dans un arbre de travail separe. Il n'apparaissait pas
+        parce que la decouverte complete rechauffait ce chemin ; le couple
+        graphiques + smoke le montrait deja, sur HEAD comme ici."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.root.update()
