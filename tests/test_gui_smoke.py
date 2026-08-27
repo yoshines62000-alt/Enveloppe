@@ -154,6 +154,43 @@ class GuiSmokeTestCase(unittest.TestCase):
 
     # -- item 4 : onglet Parametres / sauvegarde -----------------------------
 
+    # -- erreurs de saisie EN LIGNE (refonte du 2026-08-26) ----------------
+
+    def test_un_nom_de_compte_vide_s_affiche_sous_le_formulaire(self):
+        self.app.account_name_var.set("")
+        with patch("tkinter.messagebox.showwarning") as modale:
+            self.app._add_account()
+        self.assertTrue(self.app.account_erreur.visible, "l'erreur doit s'afficher en ligne")
+        modale.assert_not_called()
+        self.assertEqual(self.app.account_name_entry.cget("style"), "Erreur.TEntry")
+
+    def test_un_solde_non_numerique_marque_le_champ_du_solde(self):
+        self.app.account_name_var.set("Compte courant")
+        self.app.account_balance_var.set("beaucoup")
+        with patch("tkinter.messagebox.showwarning") as modale:
+            self.app._add_account()
+        self.assertTrue(self.app.account_erreur.visible)
+        modale.assert_not_called()
+        self.assertEqual(self.app.account_balance_entry.cget("style"), "Erreur.TEntry")
+
+    def test_un_objectif_negatif_marque_le_champ_objectif(self):
+        self.app.category_name_var.set("Epargne")
+        self.app.category_goal_var.set("-10")
+        with patch("tkinter.messagebox.showwarning") as modale:
+            self.app._add_category()
+        self.assertTrue(self.app.category_erreur.visible)
+        modale.assert_not_called()
+        self.assertEqual(self.app.category_goal_entry.cget("style"), "Erreur.TEntry")
+
+    def test_un_compte_valide_passe_sans_erreur(self):
+        """Contre-epreuve : le harnais doit pouvoir NE PAS se declencher."""
+        self.app.account_name_var.set("Compte courant")
+        self.app.account_balance_var.set("1250,40")
+        with patch("tkinter.messagebox.showwarning") as modale:
+            self.app._add_account()
+        self.assertFalse(self.app.account_erreur.visible)
+        modale.assert_not_called()
+
     def test_settings_tab_exists_with_backup_and_open_folder_buttons(self):
         labels = {b["text"] for b in _collect_widgets(self.app.settings_tab, "TButton")}
         self.assertIn("Sauvegarder les donnees...", labels)

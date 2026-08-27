@@ -386,13 +386,19 @@ class EnveloppeApp:
         ttk.Label(form, text="Nom").grid(row=0, column=0, sticky="w")
         name_entry = ttk.Entry(form, textvariable=self.account_name_var, width=25)
         name_entry.grid(row=0, column=1, padx=5)
+        self.account_name_entry = name_entry
         ttk.Label(form, text="Type (courant, epargne...)").grid(row=0, column=2, sticky="w")
         type_entry = ttk.Entry(form, textvariable=self.account_type_var, width=20)
         type_entry.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Solde de depart").grid(row=0, column=4, sticky="w")
         balance_entry = ttk.Entry(form, textvariable=self.account_balance_var, width=12)
         balance_entry.grid(row=0, column=5, padx=5)
+        self.account_balance_entry = balance_entry
         ttk.Button(form, text="Ajouter le compte", command=self._add_account).grid(row=0, column=6, padx=5)
+        # Les erreurs de saisie restent SOUS le formulaire (`apres=form`), a
+        # cote des champs dont elles parlent, plutot que dans une fenetre
+        # modale qui les masque et qu'il faut fermer avant de corriger.
+        self.account_erreur = opl_theme.Erreur(frame, apres=form)
         # Entree valide le formulaire depuis n'importe lequel de ses champs
         # (audit D33), a l'image du bouton "Ajouter le compte" - lie
         # individuellement sur chaque champ (pas sur `form`, qui ne fait
@@ -441,14 +447,19 @@ class EnveloppeApp:
         ttk.Button(actions, text="Archiver / desarchiver", command=self._toggle_account_archived).pack(side=LEFT)
 
     def _add_account(self):
+        self.account_erreur.effacer()
         name = self.account_name_var.get().strip()
         if not name:
-            messagebox.showwarning(APP_TITLE, "Le nom du compte est obligatoire.")
+            self.account_erreur.montrer(
+                "Nom", "un compte a besoin d'un nom pour qu'on le reconnaisse dans les listes.",
+                champ=self.account_name_entry)
             return
         try:
             balance = self._parse_float(self.account_balance_var.get(), "Le solde de depart")
         except ValueError as exc:
-            messagebox.showwarning(APP_TITLE, str(exc))
+            self.account_erreur.montrer(
+                "Solde de depart", f"{exc} Un montant, comme 1250 ou 1250,40.",
+                champ=self.account_balance_entry)
             return
         self.db.add_account(name, self.account_type_var.get().strip(), balance)
         self.account_name_var.set("")
@@ -503,15 +514,16 @@ class EnveloppeApp:
         self.category_goal_var = StringVar()
 
         ttk.Label(form, text="Nom de la categorie").grid(row=0, column=0, sticky="w")
-        name_entry = ttk.Entry(form, textvariable=self.category_name_var, width=25)
+        self.category_name_entry = name_entry = ttk.Entry(form, textvariable=self.category_name_var, width=25)
         name_entry.grid(row=0, column=1, padx=5)
         ttk.Label(form, text="Groupe (optionnel)").grid(row=0, column=2, sticky="w")
         group_entry = ttk.Entry(form, textvariable=self.category_group_var, width=20)
         group_entry.grid(row=0, column=3, padx=5)
         ttk.Label(form, text="Objectif d'epargne (optionnel)").grid(row=1, column=0, sticky="w", pady=(5, 0))
-        goal_entry = ttk.Entry(form, textvariable=self.category_goal_var, width=12)
+        self.category_goal_entry = goal_entry = ttk.Entry(form, textvariable=self.category_goal_var, width=12)
         goal_entry.grid(row=1, column=1, sticky="w", pady=(5, 0))
         ttk.Button(form, text="Ajouter la categorie", command=self._add_category).grid(row=1, column=4, pady=(5, 0))
+        self.category_erreur = opl_theme.Erreur(frame, apres=form)
         # Entree valide le formulaire depuis n'importe lequel de ses champs
         # (audit D33).
         for field in (name_entry, group_entry, goal_entry):
@@ -536,9 +548,12 @@ class EnveloppeApp:
         ).pack(side=LEFT, padx=10)
 
     def _add_category(self):
+        self.category_erreur.effacer()
         name = self.category_name_var.get().strip()
         if not name:
-            messagebox.showwarning(APP_TITLE, "Le nom de la categorie est obligatoire.")
+            self.category_erreur.montrer(
+                "Nom", "une categorie a besoin d'un nom — « Courses », « Transports »...",
+                champ=self.category_name_entry)
             return
         goal_text = self.category_goal_var.get().strip()
         goal = None
@@ -546,10 +561,14 @@ class EnveloppeApp:
             try:
                 goal = self._parse_float(goal_text, "L'objectif d'epargne")
             except ValueError as exc:
-                messagebox.showwarning(APP_TITLE, str(exc))
+                self.category_erreur.montrer(
+                    "Objectif d'epargne", f"{exc} Laissez vide s'il n'y en a pas.",
+                    champ=self.category_goal_entry)
                 return
             if goal <= 0:
-                messagebox.showwarning(APP_TITLE, "L'objectif d'epargne doit etre superieur a zero.")
+                self.category_erreur.montrer(
+                    "Objectif d'epargne", "un objectif doit etre superieur a zero. Laissez vide s'il n'y en a pas.",
+                    champ=self.category_goal_entry)
                 return
         self.db.add_category(name, self.category_group_var.get().strip(), savings_goal=goal)
         self.category_name_var.set("")
