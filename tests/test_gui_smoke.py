@@ -207,6 +207,77 @@ class GuiSmokeTestCase(unittest.TestCase):
 
     # -- erreurs de saisie EN LIGNE (refonte du 2026-08-26) ----------------
 
+    # -- ou atterrissent les erreurs de saisie -------------------------------
+
+    _ERREURS_DE_VUE = ['account_erreur', 'category_erreur', 'tx_erreur', 'rec_erreur']
+    _ECART_MAX_PX = 60
+
+    @staticmethod
+    def _champs_de(widget):
+        classes = ("TEntry", "TCombobox", "TSpinbox", "Text", "Scale", "TScale")
+        trouves = []
+
+        def marcher(w):
+            if w.winfo_class() in classes:
+                trouves.append(w)
+            for enfant in w.winfo_children():
+                marcher(enfant)
+
+        marcher(widget)
+        return trouves
+
+    def test_chaque_erreur_de_saisie_atterrit_pres_de_son_champ(self):
+        """Une erreur en ligne n'a de valeur que si elle est PRES du champ.
+
+        Mesure, pas relecture : trois erreurs de la suite tombaient a 96 et
+        99 px de leur champ, ou carrement sous les boutons, sans lever la
+        moindre erreur et sans qu'aucun test ne le voie. Le garde AST de
+        `test_opl_theme_aide` verifie qu'une `Erreur` sait ou se poser ;
+        celui-ci verifie ou elle atterrit vraiment.
+
+        ⚠️ Ne couvre que les erreurs posees dans une VUE. Celles des dialogues
+        demanderaient d'ouvrir chaque dialogue et de le piloter ; elles ont ete
+        mesurees a la main (6 a 45 px) mais ne sont pas verrouillees ici.
+        """
+        self.root.update()
+        trop_loin = []
+        for nom in self._ERREURS_DE_VUE:
+            erreur = getattr(self.app, nom, None)
+            self.assertIsNotNone(erreur, f"{nom} n'existe plus")
+            # On remonte au premier ancetre qui porte un champ : le parent
+            # immediat peut etre une frame « porte » qui ne contient que
+            # l'erreur, et la fenetre entiere est PIRE — le rail empile toutes
+            # les vues dans la meme cellule, on y trouverait les champs des
+            # AUTRES vues.
+            parent = erreur.master
+            while parent is not None and not self._champs_de(parent):
+                if parent is parent.winfo_toplevel():
+                    break
+                parent = parent.master
+            erreur.montrer("Sonde", "texte de mesure")
+            self.root.update()
+            try:
+                # Pas de filtre `winfo_ismapped()` : le harnais garde la
+                # fenetre `withdraw()` pour ne pas la faire clignoter, donc
+                # RIEN n'y est mappe. La geometrie, elle, est bien calculee
+                # apres `update()`. On ecarte les widgets sans hauteur, qui
+                # n'ont pas ete disposes.
+                champs = [c for c in self._champs_de(parent)
+                          if c.winfo_height() > 1 and c.winfo_rooty() < erreur.winfo_rooty()]
+                if not champs:
+                    trop_loin.append(f"{nom} : aucun champ au-dessus d'elle")
+                    continue
+                bas = max(c.winfo_rooty() + c.winfo_height() for c in champs)
+                ecart = erreur.winfo_rooty() - bas
+                if ecart > self._ECART_MAX_PX:
+                    trop_loin.append(f"{nom} : {ecart} px sous le dernier champ")
+            finally:
+                erreur.effacer()
+                self.root.update()
+        self.assertEqual(trop_loin, [], "\n".join(
+            [f"erreur(s) affichee(s) a plus de {self._ECART_MAX_PX} px de leur champ :"]
+            + trop_loin))
+
     def test_un_nom_de_compte_vide_s_affiche_sous_le_formulaire(self):
         self.app.account_name_var.set("")
         with patch("tkinter.messagebox.showwarning") as modale:
