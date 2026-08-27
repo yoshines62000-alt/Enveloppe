@@ -1238,7 +1238,7 @@ class EnveloppeApp:
             pass
 
         if status == "error":
-            messagebox.showwarning(APP_TITLE, payload)
+            opl_theme.message(self.root, "Import interrompu", payload, ton="erreur")
             return
 
         result = payload
@@ -1817,9 +1817,12 @@ class EnveloppeApp:
         else:
             message = "Aucune echeance due pour le moment."
         if archived_warning:
-            messagebox.showwarning(APP_TITLE, message + archived_warning)
+            # Multiligne : il ENUMERE les modeles vises sur un compte archive.
+            # Une barre d'etat le tronquerait.
+            opl_theme.message(self.root, "Modeles sans effet",
+                              message + archived_warning, ton="alerte")
         else:
-            messagebox.showinfo(APP_TITLE, message)
+            self.statut.dire(message, ton="succes")
 
     def _auto_generate_recurring(self):
         # Silencieux si rien n'est du ET qu'aucun modele n'est bloque par un
@@ -1840,9 +1843,13 @@ class EnveloppeApp:
         else:
             message = "Aucune transaction recurrente generee."
         if archived_warning:
-            messagebox.showwarning(APP_TITLE, message + archived_warning)
+            opl_theme.message(self.root, "Modeles sans effet",
+                              message + archived_warning, ton="alerte")
         else:
-            messagebox.showinfo(APP_TITLE, message)
+            # Cette generation est AUTOMATIQUE, 200 ms apres l'ouverture :
+            # une modale y accueillerait l'utilisateur avant qu'il ait rien
+            # demande.
+            self.statut.dire(message, ton="succes")
 
     # -- onglet Rapports -------------------------------------------------------
 

@@ -28,26 +28,31 @@ import gui
 # d'echec, pas de trace, juste une execution qui ne finit jamais. On neutralise
 # donc le composant pour tout ce module. Les tests qui verifient un message le
 # repatchent localement — un patch imbrique prend le pas sur celui-ci.
-_filet_message = None
+_message_reel = None
 
 
 def setUpModule():
-    # Imports locaux : les fichiers hotes ne nomment pas ces modules de la
-    # meme facon (`patch` ou `mock.patch`, `gui` ou `gui as gui_mod`, ou pas de
-    # gui du tout). `opl_theme` est le meme objet module que `gui.opl_theme`,
-    # le patch porte donc des deux cotes.
-    from unittest.mock import patch as _patch
-
+    # Import local : les fichiers hotes ne nomment pas `gui` de la meme facon
+    # (`gui`, `gui as gui_mod`, ou pas de gui du tout). `opl_theme` est le meme
+    # objet module que `gui.opl_theme`, le leurre porte donc des deux cotes.
     import opl_theme as _theme
 
-    global _filet_message
-    _filet_message = _patch.object(_theme, "message")
-    _filet_message.start()
+    global _message_reel
+    _message_reel = _theme.message
+    # ⚠️ ECHANGE D'ATTRIBUT, PAS `mock.patch`. Un patcher demarre par `.start()`
+    # s'inscrit dans un registre global que `mock.patch.stopall()` vide — et
+    # plusieurs classes de ces suites appellent `stopall` dans leur nettoyage.
+    # Le filet mourait donc au premier test d'une de ces classes, et le suivant
+    # qui empruntait un chemin d'erreur ouvrait une VRAIE modale : la suite
+    # pendait, sans echec ni message. Un echange direct n'est inscrit nulle part.
+    _theme.message = lambda *args, **kwargs: None
 
 
 def tearDownModule():
-    if _filet_message is not None:
-        _filet_message.stop()
+    if _message_reel is not None:
+        import opl_theme as _theme
+
+        _theme.message = _message_reel
 # ----------------------------------------------------------------------------
 
 
@@ -758,11 +763,14 @@ class GuiSmokeTestCase(unittest.TestCase):
         )
         self.app.db.update_account(account_id, archived=1)
 
-        self.app._generate_recurring_now()
+        with patch.object(gui.opl_theme, "message") as alerte:
+            self.app._generate_recurring_now()
 
-        self.mock_warning.assert_called_once()
-        message = self.mock_warning.call_args[0][1]
+        alerte.assert_called_once()
+        message = alerte.call_args[0][2]
         self.assertIn("archive", message.lower())
+        # Il NOMME les modeles concernes : c'est ce qui justifie un message
+        # plutot qu'une ligne de barre d'etat.
         self.assertIn("Loyer (ancien logement)", message)
         self.mock_info.assert_not_called()
         self.assertEqual(self.app.db.list_transactions(), [])
@@ -773,7 +781,9 @@ class GuiSmokeTestCase(unittest.TestCase):
 
         self.app._generate_recurring_now()
 
-        self.mock_info.assert_called_once()
+        # Un compte rendu d'une ligne : barre d'etat, sans clic a payer.
+        self.assertIn("recurrente", self.app.statut.cget("text"))
+        self.mock_info.assert_not_called()
         self.mock_warning.assert_not_called()
 
     def test_auto_generate_recurring_warns_at_startup_about_archived_targets_even_with_nothing_due(self):
@@ -786,10 +796,13 @@ class GuiSmokeTestCase(unittest.TestCase):
         )
         self.app.db.update_account(account_id, archived=1)
 
-        self.app._auto_generate_recurring()
+        with patch.object(gui.opl_theme, "message") as alerte:
+            self.app._auto_generate_recurring()
 
-        self.mock_warning.assert_called_once()
-        self.assertIn("archive", self.mock_warning.call_args[0][1].lower())
+        # Multiligne (il enumere les modeles vises) : c'est un message theme,
+        # pas une ligne de barre d'etat qui le tronquerait.
+        alerte.assert_called_once()
+        self.assertIn("archive", alerte.call_args[0][2].lower())
 
     def test_auto_generate_recurring_stays_silent_when_nothing_is_due_and_nothing_is_archived(self):
         account_id = self.app.db.add_account("Compte", starting_balance=0.0)
