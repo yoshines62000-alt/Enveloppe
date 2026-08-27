@@ -32,13 +32,13 @@ sur un simple solde de compte.
 - **Catégories groupées** : organisez vos enveloppes par groupe (ex :
   "Obligations", "Loisirs") pour une vue plus claire, avec un **objectif
   d'épargne** optionnel par catégorie (suivi visuel de la progression dans
-  l'onglet Budget).
+  la vue Budget).
 - **Budget mensuel avec navigation** : parcourez les mois passés et futurs,
   assignez un montant à chaque catégorie, et voyez immédiatement l'activité
   et le disponible (report inclus) pour le mois affiché. Les lignes en
   dépassement sont surlignées en rouge, et une **bannière** signale dès
   l'ouverture de l'application le nombre d'enveloppes en dépassement, sans
-  avoir à ouvrir l'onglet Budget.
+  avoir à ouvrir la vue Budget.
 - **"Reste à assigner"** : indicateur toujours visible de l'argent que vous
   avez mais n'avez pas encore donné a une enveloppe.
 - **Déplacer de l'argent entre enveloppes** : rééquilibrez votre budget d'un
@@ -100,27 +100,27 @@ standard de Python sous Windows).
 
 ## Utilisation
 
-1. Onglet **Comptes** : ajoutez vos comptes avec leur solde de départ.
-2. Onglet **Catégories** : créez vos enveloppes (ex : Loyer, Courses,
+1. Vue **Comptes** : ajoutez vos comptes avec leur solde de départ.
+2. Vue **Catégories** : créez vos enveloppes (ex : Loyer, Courses,
    Loisirs), avec un groupe et un objectif d'épargne optionnels.
-3. Onglet **Budget** : assignez un montant à chaque catégorie pour le mois
+3. Vue **Budget** : assignez un montant à chaque catégorie pour le mois
    affiché (double-clic sur une ligne). Le "Reste à assigner" en haut à
    droite indique combien d'argent n'est pas encore affecté ; une bannière
    rouge signale, dès l'ouverture de l'application, les enveloppes en
    dépassement pour le mois affiché.
-4. Onglet **Transactions** : enregistrez vos dépenses et revenus (double-
+4. Vue **Transactions** : enregistrez vos dépenses et revenus (double-
    clic sur une ligne pour la modifier). Une dépense catégorisée réduit
    automatiquement le disponible de son enveloppe ; un revenu sans catégorie
-   augmente le "Reste à assigner". Depuis cet onglet, vous pouvez aussi
+   augmente le "Reste à assigner". Depuis cette vue, vous pouvez aussi
    fractionner une transaction sur plusieurs catégories, effectuer un
    virement entre deux comptes, pointer une ou plusieurs transactions
    (rapprochement bancaire), et importer/exporter vos transactions en CSV.
-5. Onglet **Récurrentes** : définissez un modèle de transaction répétitive
+5. Vue **Récurrentes** : définissez un modèle de transaction répétitive
    (loyer, abonnement...) avec sa fréquence ; les échéances dues sont
    générées automatiquement à chaque ouverture de l'application.
-6. Onglets **Rapports** et **Vue annuelle** : consultez vos tendances de
+6. Vues **Rapports** et **Vue annuelle** : consultez vos tendances de
    dépenses par catégorie, et le plan budgétaire de toute une année.
-7. Onglet **Paramètres** : sauvegardez vos données en un clic (voir la
+7. Vue **Paramètres** : sauvegardez vos données en un clic (voir la
    section **Sauvegarde et restauration** ci-dessous).
 
 ## Confidentialité
@@ -131,11 +131,11 @@ standard de Python sous Windows).
 
 ## Sauvegarde et restauration
 
-- Onglet **Paramètres > Sauvegarde** : le bouton « Sauvegarder les
+- Vue **Paramètres > Sauvegarde** : le bouton « Sauvegarder les
   données... » enregistre une copie complète du fichier de données à
   l'emplacement de votre choix, sans fermer l'application ni verrouiller la
   base active.
-- Onglet **Paramètres > Restauration** : le bouton « Restaurer une
+- Vue **Paramètres > Restauration** : le bouton « Restaurer une
   sauvegarde... » remplace toutes les données actuelles par le contenu d'un
   fichier de sauvegarde choisi, sans quitter l'application (confirmation
   demandée avant tout remplacement, irréversible). Alternative manuelle
@@ -256,7 +256,7 @@ découvrir à l'usage :
   (`budget.format_amount`) et aucune table de la base ne stocke de devise
   par compte. Enveloppe ne convient donc pas tel quel à un budget dans une
   autre devise ou multi-devises.
-- **Import CSV limité au format d'export d'Enveloppe** : l'import (onglet
+- **Import CSV limité au format d'export d'Enveloppe** : l'import (vue
   Transactions) attend au minimum les en-têtes `Date` et `Montant` du
   format produit par l'export d'Enveloppe lui-même, sans correspondance de
   colonnes ni détection automatique de format. Un relevé bancaire brut
