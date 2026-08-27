@@ -130,6 +130,11 @@ class EnveloppeApp:
         self.update_status_var = StringVar(value="")
         self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground=opl_theme.couleur("texte_doux"))
         self.update_status_label.pack(side=LEFT, padx=(6, 0), pady=4)
+        # Ce qui s'est passe, SANS arreter l'utilisateur : un tiers des
+        # boites de cette suite ne posaient aucune question et n'annoncaient
+        # aucun echec — elles coutaient un clic pour dire « Termine ».
+        self.statut = opl_theme.Statut(bottom_bar)
+        self.statut.pack(side=LEFT, padx=(12, 0), pady=4)
         donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground=opl_theme.couleur("lien"), cursor="hand2")
         donate_label.pack(side=RIGHT, padx=8, pady=4)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
@@ -795,9 +800,13 @@ class EnveloppeApp:
                 copied += 1
         self._refresh_budget()
         if copied:
-            messagebox.showinfo(APP_TITLE, f"{copied} categorie(s) mise(s) a jour depuis {bg.month_label(previous_month)}.")
+            self.statut.dire(
+                f"{copied} categorie(s) mise(s) a jour depuis {bg.month_label(previous_month)}.",
+                ton="succes")
         else:
-            messagebox.showinfo(APP_TITLE, "Rien a copier : aucune assignation trouvee le mois precedent, ou tout est deja assigne ce mois-ci.")
+            self.statut.dire(
+                "Rien a copier : aucune assignation trouvee le mois precedent, ou tout est deja assigne ce mois-ci.",
+                ton="succes")
 
     def _open_move_between_envelopes_dialog(self):
         categories, category_labels = self._move_dialog_category_choices()
@@ -1085,7 +1094,9 @@ class EnveloppeApp:
             return
         account_id = self._parse_id(self.tx_filter_account_var.get()) if self.tx_filter_account_var.get() and self.tx_filter_account_var.get() != "Tous" else None
         export_transactions_csv(self.db.list_transactions(account_id=account_id), Path(output), db=self.db)
-        messagebox.showinfo(APP_TITLE, f"Transactions exportees : {Path(output).name}")
+        self.statut.dire(
+            f"Transactions exportees : {Path(output).name}",
+            ton="succes")
 
     def _csv_import_marker_path(self) -> Path:
         """Fichier "temoin" d'un import CSV en cours (audit D44) - voir
@@ -2241,7 +2252,9 @@ class EnveloppeApp:
         self._refresh_recurring()
         self._refresh_reports()
         self._refresh_annual()
-        messagebox.showinfo(APP_TITLE, "Sauvegarde restauree avec succes.")
+        self.statut.dire(
+            "Sauvegarde restauree avec succes.",
+            ton="succes")
 
     def _open_data_dir(self):
         import os

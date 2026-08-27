@@ -248,7 +248,9 @@ class GuiSmokeTestCase(unittest.TestCase):
         names = [a["name"] for a in self.app.db.list_accounts()]
         self.assertIn("Compte restaure", names)
         self.assertNotIn("Compte original", names)
-        self.mock_info.assert_called_once()
+        # La restauration annonce son succes dans la barre d'etat : elle ne
+        # pose aucune question et n'annonce aucun echec.
+        self.assertIn("restauree", self.app.statut.cget("text").lower())
 
         # Le Treeview reflete deja les donnees restaurees (tous les onglets
         # sont rafraichis), sans necessiter de redemarrer l'application.
